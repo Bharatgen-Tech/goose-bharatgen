@@ -121,6 +121,7 @@ In Python session mode the Developer extension exposes one tool, `python`, which
   Restoring waits for the next `python` call, and re-running a definition repeats any side effect in its class body or decorators.
   Snapshots are removed when the session is deleted.
 - Sessions idle for 30 minutes are shut down and restored from the snapshot on the next call.
+  A session whose latest state could not be saved stays running instead, so nothing is lost.
 
 ## Limitations
 

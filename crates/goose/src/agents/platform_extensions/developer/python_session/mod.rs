@@ -67,6 +67,9 @@ struct SessionSlot {
     incarnation: Option<i64>,
     reset_pending: bool,
     restore_notice: Option<String>,
+    /// Whether the snapshot on disk matches the live namespace, so reaping the
+    /// kernel loses nothing.
+    snapshot_current: bool,
     last_used: Instant,
 }
 
@@ -78,6 +81,7 @@ impl Default for SessionSlot {
             incarnation: None,
             reset_pending: false,
             restore_notice: None,
+            snapshot_current: false,
             last_used: Instant::now(),
         }
     }
@@ -229,7 +233,8 @@ impl PythonSessionClient {
                     };
                     for slot in Self::live_slots(&sessions) {
                         if let Ok(mut slot) = slot.try_lock() {
-                            if slot.last_used.elapsed() >= IDLE_KERNEL_TTL {
+                            if slot.snapshot_current && slot.last_used.elapsed() >= IDLE_KERNEL_TTL
+                            {
                                 if let Some(kernel) = slot.kernel.take() {
                                     kernel.stop();
                                 }
@@ -334,6 +339,7 @@ impl PythonSessionClient {
             notice.push(']');
             slot.restore_notice = Some(notice);
         }
+        slot.snapshot_current = true;
         slot.kernel = Some(kernel);
         Ok(())
     }
@@ -442,6 +448,7 @@ impl PythonSessionClient {
         // A snapshot restore after a crash brings the variables back, so the
         // restore notice is the accurate one and the reset notice is suppressed.
         let reset_notice = std::mem::take(&mut slot.reset_pending) && restore_notice.is_none();
+        slot.snapshot_current = outcome.saved;
 
         if let Ok(listing) = slot
             .kernel
@@ -853,9 +860,7 @@ impl McpClientTrait for PythonSessionClient {
                     }
                     Err(_) => self.cached_listing(session_id)?,
                 },
-                None => self
-                    .cached_listing(session_id)
-                    .or_else(|| saved_listing(&snapshot))?,
+                None => saved_listing(&snapshot)?,
             },
             Err(_) => self.cached_listing(session_id)?,
         };

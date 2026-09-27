@@ -128,11 +128,15 @@ async fn namespace_survives_process_restart_via_state_snapshot() {
 
     let mut kernel = Kernel::spawn(&spec).await.expect("kernel should spawn");
     assert!(kernel.restored_names().is_empty());
-    exec(
+    let outcome = exec(
         &mut kernel,
         "totals = {'a': 1, 'b': 2}\n_scratch = [3]\nimport socket\nsock = socket.socket()",
     )
     .await;
+    assert!(
+        outcome.saved,
+        "the snapshot should be written after the cell"
+    );
     kernel.kill();
 
     let mut revived = Kernel::spawn(&spec).await.expect("kernel should respawn");

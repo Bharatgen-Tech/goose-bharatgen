@@ -48,6 +48,8 @@ struct DriverResponse {
     images: Vec<ImageRequest>,
     #[serde(default)]
     images_dropped: usize,
+    #[serde(default)]
+    saved: bool,
 }
 
 /// An image the cell asked to show the model via `view_image()`; the host loads
@@ -78,6 +80,8 @@ pub struct ExecOutcome {
     pub images: Vec<ImageRequest>,
     /// `view_image()` calls beyond the per-cell cap that the driver did not queue.
     pub images_dropped: usize,
+    /// Whether the snapshot written after this cell matches the namespace.
+    pub saved: bool,
 }
 
 pub struct Kernel {
@@ -238,6 +242,7 @@ impl Kernel {
             interrupted,
             images: response.images,
             images_dropped: response.images_dropped,
+            saved: response.saved,
         })
     }
 

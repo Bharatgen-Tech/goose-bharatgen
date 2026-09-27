@@ -476,8 +476,8 @@ def _size_hint(value):
 
 def _namespace_listing(only=None):
     entries = []
-    for name, value in NS.items():
-        if name in _INTERNAL_NAMES or (only is not None and name not in only):
+    for name, value in _session_entries():
+        if only is not None and name not in only:
             continue
         if isinstance(value, type(sys)):
             continue
@@ -524,27 +524,37 @@ def _dump_capped(value, cap):
     return sink.value()
 
 
+def _session_entries():
+    # A copy, since a background thread or signal handler in user code can
+    # change globals while this runs; non-string keys are not variables.
+    return [
+        (name, value)
+        for name, value in list(NS.items())
+        if isinstance(name, str) and name not in _INTERNAL_NAMES
+    ]
+
+
 def _save_state():
     """Best-effort per-variable pickle so the namespace survives process restarts.
 
     Each value and the snapshot as a whole are capped, so the save that follows
-    every cell stays bounded however large the namespace grows.
+    every cell stays bounded however large the namespace grows. Returns whether
+    the snapshot now matches the namespace, so the host only reaps a kernel whose
+    state is on disk.
     """
     if not STATE_PATH:
-        return
-    names = []
+        return False
+    entries = _session_entries()
+    names = [name for name, _ in entries]
     keep = {}
     sizes = {}
     modules = {}
     definitions = [
         (name, source)
-        for name, source in _definitions.items()
-        if name in NS and _is_session_definition(name, NS[name])
+        for name, source in list(_definitions.items())
+        if _is_session_definition(name, NS.get(name))
     ]
-    for name, value in NS.items():
-        if name in _INTERNAL_NAMES:
-            continue
-        names.append(name)
+    for name, value in entries:
         if isinstance(value, type(sys)):
             modules[name] = value.__name__
             continue
@@ -554,15 +564,27 @@ def _save_state():
         if blob is not None:
             keep[name] = value
             sizes[name] = len(blob)
+    header = {
+        "python": sys.version_info[:2],
+        "names": names,
+        "modules": modules,
+        "definitions": definitions,
+    }
+    # The names, modules, and definitions count against the total cap too.
+    header_blob = _dump_capped(header, STATE_TOTAL_CAP // 8)
+    if header_blob is None:
+        return False
+    graph_cap = STATE_TOTAL_CAP - len(header_blob)
     # Serialize the survivors as one object graph so shared references
     # (e.g. `b = a`) are still shared after a restore. Drop the largest
     # variables until the combined snapshot fits the total cap.
-    graph = _dump_capped(keep, STATE_TOTAL_CAP)
+    graph = _dump_capped(keep, graph_cap)
     while graph is None and keep:
         del keep[max(keep, key=lambda n: sizes.get(n, 0))]
-        graph = _dump_capped(keep, STATE_TOTAL_CAP)
+        graph = _dump_capped(keep, graph_cap)
     if graph is None:
-        return
+        return False
+    header["graph"] = graph
     # Two goose processes can hold the same session, so each writer stages its
     # own file before the atomic replace.
     tmp = "%s.%d.tmp" % (STATE_PATH, os.getpid())
@@ -578,20 +600,13 @@ def _save_state():
             # shares the file, and so the atomic replace, with the pickle.
             saved = set(keep) | {name for name, _ in definitions}
             f.write(json.dumps(_namespace_listing(saved)).encode("ascii") + b"\n")
-            pickle.dump(
-                {
-                    "python": sys.version_info[:2],
-                    "names": names,
-                    "graph": graph,
-                    "modules": modules,
-                    "definitions": definitions,
-                },
-                f,
-            )
+            pickle.dump(header, f)
         os.replace(tmp, STATE_PATH)
     except Exception:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
+        return False
+    return True
 
 
 class _Unrestorable:
@@ -826,9 +841,9 @@ def main():
             if op == "exec":
                 result = _run_cell(req.get("code", ""))
                 try:
-                    _save_state()
+                    result["saved"] = _save_state()
                 except BaseException:
-                    pass
+                    result["saved"] = False
                 _respond(proto, req_id, result)
             elif op == "ns":
                 _respond(proto, req_id, {"ok": True, "ns": _namespace_listing()})
