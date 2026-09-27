@@ -173,6 +173,13 @@ def fib(n):
     return n if n < 2 else fib(n - 1) + fib(n - 2)
 def with_default(x=scale):
     return x
+def logged(fn):
+    def wrapper(*args):
+        return fn(*args)
+    return wrapper
+@logged
+def plain_wrapped(v):
+    return v + 1
 b = Box(3)
 handlers = [normalize]
 r = sh("echo hi")"#,
@@ -192,12 +199,12 @@ r = sh("echo hi")"#,
     let outcome = exec(
         &mut revived,
         "(normalize(' Y '), b.scaled(), isinstance(b, Box), fib(20), with_default(), \
-         handlers[0] is normalize, r.out.strip())",
+         handlers[0] is normalize, r.out.strip(), plain_wrapped(1))",
     )
     .await;
     assert_eq!(
         outcome.value.as_deref(),
-        Some("('y', 30, True, 6765, 10, True, 'hi')"),
+        Some("('y', 30, True, 6765, 10, True, 'hi', 2)"),
         "error: {:?}",
         outcome.error
     );

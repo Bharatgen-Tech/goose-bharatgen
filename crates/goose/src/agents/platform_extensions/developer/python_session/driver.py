@@ -30,6 +30,9 @@ SH_DRAIN_GRACE_SECS = 0.5
 NS_MAX_ENTRIES = 50
 NS_MAX_CHARS = 1200
 STATE_PATH = os.environ.get("GOOSE_PYTHON_SESSION_STATE_PATH", "")
+# A plain-text copy of the namespace listing next to the snapshot, so the host
+# can list a saved session without restoring it, which runs code.
+LISTING_PATH = STATE_PATH + ".listing" if STATE_PATH else ""
 STATE_VALUE_CAP = 8 * 1024 * 1024
 STATE_TOTAL_CAP = 64 * 1024 * 1024
 _DRIVER_FILE = globals().get("__file__", "<python-session-driver>")
@@ -345,9 +348,11 @@ _INTERNAL_NAMES = frozenset(NS) | {"_"}
 # The driver's own module, under a name that stays importable once `__main__`
 # is the session, so a saved ShellResult still unpickles.
 _DRIVER_MODULE = "goose_python_session_driver"
-# Source of each top-level function and class a cell bound, latest last. Pickle
-# stores these by name only, so a restore re-runs their definitions.
+# Source of each top-level function and class a cell bound, latest last, and the
+# object that definition bound. Pickle stores these by name only, so a restore
+# re-runs their definitions while the name still holds that object.
 _definitions = {}
+_definition_values = {}
 _cell_count = 0
 
 
@@ -362,14 +367,13 @@ def _record_definitions(nodes, before):
         if value is not None and value is not before.get(node.name):
             _definitions.pop(node.name, None)
             _definitions[node.name] = ast.unparse(node)
+            _definition_values[node.name] = value
 
 
 def _is_session_definition(name, value):
-    return (
-        name in _definitions
-        and getattr(value, "__module__", None) == "__main__"
-        and getattr(value, "__qualname__", None) == name
-    )
+    # Identity rather than __qualname__, so a function wrapped by a decorator
+    # that does not use functools.wraps still counts.
+    return name in _definitions and _definition_values.get(name) is value
 
 
 def _run_cell(code):
@@ -583,7 +587,20 @@ def _save_state():
                 f,
             )
         os.replace(tmp, STATE_PATH)
+        _write_private(LISTING_PATH, _namespace_listing().encode("utf-8"))
     except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+
+
+def _write_private(path, data):
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        with os.fdopen(os.open(tmp, flags, 0o600), "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except OSError:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
 
@@ -713,6 +730,7 @@ def _restore_definitions(definitions, restored):
             failed.append((name, source))
             continue
         _definitions[name] = source
+        _definition_values[name] = NS.get(name)
         restored.add(name)
     return failed
 

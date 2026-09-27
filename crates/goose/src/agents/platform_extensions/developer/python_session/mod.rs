@@ -342,6 +342,7 @@ impl PythonSessionClient {
             kernel.stop();
         }
         if let Some(path) = slot.state_path.take() {
+            let _ = std::fs::remove_file(listing_path(&path));
             let _ = std::fs::remove_file(path);
         }
         slot.incarnation = None;
@@ -698,6 +699,12 @@ fn is_python_call(block: &MessageContent) -> bool {
     }))
 }
 
+fn listing_path(snapshot: &Path) -> PathBuf {
+    let mut path = snapshot.as_os_str().to_owned();
+    path.push(".listing");
+    PathBuf::from(path)
+}
+
 fn snapshot_path(state_dir: &Path, session: &Session) -> PathBuf {
     state_dir.join(format!(
         "{}-{}.pkl",
@@ -798,13 +805,14 @@ impl McpClientTrait for PythonSessionClient {
     /// summarization hides a `python` call, the model still sees its own calls, so the
     /// re-anchor is only emitted once one has been hidden. A session with neither a live kernel slot
     /// nor a snapshot has no variables to list, but a copied conversation may show
-    /// `python` calls whose variables never existed here. A session resumed in a new
-    /// process has no kernel yet, so one is restored from the snapshot to list what
-    /// came back.
+    /// `python` calls whose variables never existed here. Without a live kernel the
+    /// listing saved next to the snapshot is used: restoring a snapshot runs code
+    /// (unpickling, re-running definitions), which waits for an approved cell.
     async fn get_moim(&self, session_id: &str) -> Option<String> {
         let session = self.load_session(session_id).await?;
         self.forget_earlier_incarnation(&session);
-        let has_snapshot = snapshot_path(&self.state_dir(), &session).is_file();
+        let snapshot = snapshot_path(&self.state_dir(), &session);
+        let has_snapshot = snapshot.is_file();
         if !self.has_slot(&session) && !has_snapshot {
             return self.fresh_namespace_notice(session_id).await;
         }
@@ -814,27 +822,21 @@ impl McpClientTrait for PythonSessionClient {
 
         let slot = self.session_slot(session_id);
         let listing = match slot.try_lock() {
-            Ok(mut guard) => {
-                if guard.kernel.is_none() && has_snapshot {
-                    self.ensure_reaper();
-                    let _ = self
-                        .ensure_kernel(&mut guard, session_id, Some(session.working_dir))
-                        .await;
-                }
-                match guard.kernel.as_mut() {
-                    Some(kernel) => match kernel.namespace(NS_PROBE_TIMEOUT).await {
-                        Ok(listing) => {
-                            self.ns_cache
-                                .lock()
-                                .unwrap()
-                                .insert(session_id.to_string(), listing.clone());
-                            listing
-                        }
-                        Err(_) => self.cached_listing(session_id)?,
-                    },
-                    None => self.cached_listing(session_id)?,
-                }
-            }
+            Ok(mut guard) => match guard.kernel.as_mut() {
+                Some(kernel) => match kernel.namespace(NS_PROBE_TIMEOUT).await {
+                    Ok(listing) => {
+                        self.ns_cache
+                            .lock()
+                            .unwrap()
+                            .insert(session_id.to_string(), listing.clone());
+                        listing
+                    }
+                    Err(_) => self.cached_listing(session_id)?,
+                },
+                None => self
+                    .cached_listing(session_id)
+                    .or_else(|| std::fs::read_to_string(listing_path(&snapshot)).ok())?,
+            },
             Err(_) => self.cached_listing(session_id)?,
         };
 

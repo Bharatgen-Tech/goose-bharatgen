@@ -140,6 +140,48 @@ async fn kernel_death_is_reported_and_snapshot_restores_the_next_cell() {
 
 #[tokio::test]
 #[serial]
+async fn saved_namespace_is_listed_without_restoring_it() {
+    if !python_available() {
+        eprintln!("skipping: python3 not available");
+        return;
+    }
+    let (client, session_id, dir, context) = setup().await;
+    let marker = dir.path().join("class-body-ran");
+    let cell = format!(
+        "class Tracked:\n    open({:?}, 'a').write('x')\nkept = Tracked()",
+        marker.display().to_string()
+    );
+    run_cell(&client, &session_id, &cell).await;
+    hide_python_call(&context, &session_id).await;
+    drop(client);
+
+    // A new process: no kernel, only the snapshot and its listing on disk.
+    let client = PythonSessionClient::new(context.clone()).unwrap();
+    let listing = client
+        .get_moim(&session_id)
+        .await
+        .expect("the saved listing is shown");
+    assert!(
+        listing.contains("kept") && listing.contains("Tracked"),
+        "got: {listing}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        "x",
+        "listing the namespace must not restore it, which re-runs definitions"
+    );
+
+    let result = run_cell(&client, &session_id, "type(kept).__name__").await;
+    assert!(
+        result_text(&result).contains("=> 'Tracked'"),
+        "got: {}",
+        result_text(&result)
+    );
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "xx");
+}
+
+#[tokio::test]
+#[serial]
 async fn copied_conversation_is_told_the_namespace_is_fresh() {
     let (client, session_id, _dir, context) = setup().await;
     assert!(
