@@ -150,6 +150,60 @@ async fn namespace_survives_process_restart_via_state_snapshot() {
 }
 
 #[tokio::test]
+async fn functions_and_classes_defined_in_cells_survive_restart() {
+    require_python!();
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state.pkl");
+    let spec = spec(dir.path(), Some(&state));
+
+    let mut kernel = Kernel::spawn(&spec).await.expect("kernel should spawn");
+    let outcome = exec(
+        &mut kernel,
+        r#"import functools as ft
+scale = 10
+def normalize(s):
+    return s.strip().lower()
+class Box:
+    def __init__(self, v):
+        self.v = v
+    def scaled(self, by=scale):
+        return self.v * by
+@ft.lru_cache(maxsize=None)
+def fib(n):
+    return n if n < 2 else fib(n - 1) + fib(n - 2)
+def with_default(x=scale):
+    return x
+b = Box(3)
+handlers = [normalize]
+r = sh("echo hi")"#,
+    )
+    .await;
+    assert!(outcome.error.is_none(), "error: {:?}", outcome.error);
+    let outcome = exec(&mut kernel, "1 / 0\ndef normalize(s):\n    return 'v2'").await;
+    assert!(outcome.error.is_some());
+    kernel.kill();
+
+    let mut revived = Kernel::spawn(&spec).await.expect("kernel should respawn");
+    assert!(
+        revived.dropped_names().is_empty(),
+        "nothing should be dropped, got: {:?}",
+        revived.dropped_names()
+    );
+    let outcome = exec(
+        &mut revived,
+        "(normalize(' Y '), b.scaled(), isinstance(b, Box), fib(20), with_default(), \
+         handlers[0] is normalize, r.out.strip())",
+    )
+    .await;
+    assert_eq!(
+        outcome.value.as_deref(),
+        Some("('y', 30, True, 6765, 10, True, 'hi')"),
+        "error: {:?}",
+        outcome.error
+    );
+}
+
+#[tokio::test]
 async fn restore_keeps_aliases_and_drops_only_unloadable_variables() {
     require_python!();
     let dir = tempfile::tempdir().unwrap();

@@ -117,6 +117,7 @@ In Python session mode the Developer extension exposes one tool, `python`, which
 - **Across compaction**: once earlier `python` calls are hidden from goose, by compaction or by tool-pair summarization, goose sees a short `<python-session>` listing of the variables that still exist and reuses them instead of re-reading their inputs.
 - **Across restarts**: variables that can be pickled are snapshotted after every cell into a `python-session/` directory next to the session database.
   Resuming the session in a new goose process restores them, and the first cell reports what came back and what could not be restored.
+  Functions and classes defined in cells are restored by re-running their definitions, so instances of those classes come back too; lambdas and objects that cannot be pickled do not.
   Snapshots are removed when the session is deleted.
 - Sessions idle for 30 minutes are shut down and restored from the snapshot on the next call.
 

@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import traceback
+import types
 
 MAX_CHARS = max(1024, int(os.environ.get("GOOSE_PYTHON_SESSION_MAX_OUTPUT_CHARS", "16384")))
 MAX_IMAGES = max(1, int(os.environ.get("GOOSE_PYTHON_SESSION_MAX_IMAGES", "8")))
@@ -332,18 +333,43 @@ def view_image(path, crop=None):
         _images_dropped += 1
 
 
-NS = {
-    "__name__": "__main__",
-    "__builtins__": __builtins__,
-    "sh": sh,
-    "edit": edit,
-    "view_image": view_image,
-}
+# The session namespace is a real module registered as `__main__` (see main()),
+# so pickle can find functions and classes defined in cells by name.
+_SESSION_MAIN = types.ModuleType("__main__")
+NS = _SESSION_MAIN.__dict__
+NS.update({"__builtins__": __builtins__, "sh": sh, "edit": edit, "view_image": view_image})
 _HELPERS = frozenset(("sh", "edit", "view_image"))
 # Names the session owns; everything else in NS, including `_scratch`, belongs
 # to the model and is listed and persisted.
-_INTERNAL_NAMES = frozenset(("__name__", "__builtins__", "_")) | _HELPERS
+_INTERNAL_NAMES = frozenset(NS) | {"_"}
+# The driver's own module, under a name that stays importable once `__main__`
+# is the session, so a saved ShellResult still unpickles.
+_DRIVER_MODULE = "goose_python_session_driver"
+# Source of each top-level function and class a cell bound, latest last. Pickle
+# stores these by name only, so a restore re-runs their definitions.
+_definitions = {}
 _cell_count = 0
+
+
+def _run_code(code_object):
+    # The session exists to run the model's code; see the sh() note.
+    exec(code_object, NS)  # nosemgrep: Intersect.semgrep.custom_ruleset.rules.exec-detected
+
+
+def _record_definitions(nodes, before):
+    for node in nodes:
+        value = NS.get(node.name)
+        if value is not None and value is not before.get(node.name):
+            _definitions.pop(node.name, None)
+            _definitions[node.name] = ast.unparse(node)
+
+
+def _is_session_definition(name, value):
+    return (
+        name in _definitions
+        and getattr(value, "__module__", None) == "__main__"
+        and getattr(value, "__qualname__", None) == name
+    )
 
 
 def _run_cell(code):
@@ -373,12 +399,20 @@ def _run_cell(code):
     trailing_expr = None
     if tree.body and isinstance(tree.body[-1], ast.Expr):
         trailing_expr = ast.Expression(tree.body.pop(-1).value)
+    defined = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    ]
+    before = {node.name: NS.get(node.name) for node in defined}
 
     try:
         with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
             if tree.body:
-                # The session exists to run the model's code; see the sh() note.
-                exec(compile(tree, filename, "exec"), NS)  # nosemgrep: Intersect.semgrep.custom_ruleset.rules.exec-detected
+                try:
+                    _run_code(compile(tree, filename, "exec"))
+                finally:
+                    _record_definitions(defined, before)
             if trailing_expr is not None:
                 value = eval(compile(trailing_expr, filename, "eval"), NS)
                 if value is not None:
@@ -501,12 +535,19 @@ def _save_state():
     keep = {}
     sizes = {}
     modules = {}
+    definitions = [
+        (name, source)
+        for name, source in _definitions.items()
+        if name in NS and _is_session_definition(name, NS[name])
+    ]
     for name, value in NS.items():
         if name in _INTERNAL_NAMES:
             continue
         names.append(name)
         if isinstance(value, type(sys)):
             modules[name] = value.__name__
+            continue
+        if _is_session_definition(name, value):
             continue
         blob = _dump_capped(value, STATE_VALUE_CAP)
         if blob is not None:
@@ -537,6 +578,7 @@ def _save_state():
                     "names": names,
                     "graph": graph,
                     "modules": modules,
+                    "definitions": definitions,
                 },
                 f,
             )
@@ -631,25 +673,64 @@ def _restore_state():
         if state.get("python") != sys.version_info[:2]:
             return [], names
         graph = state.get("graph", b"")
-        values, tolerant = _load_graph(graph) if graph else ({}, False)
         modules = state.get("modules", {})
+        definitions = state.get("definitions", [])
     except Exception:
         return [], []
-    restored = []
-    for name, value in values.items():
-        if tolerant and _reaches_unrestorable(value):
-            continue
-        NS[name] = value
-        restored.append(name)
-    # Module aliases (`import pandas as pd`) are re-imported rather than pickled.
+    restored = set()
+    # Module aliases (`import pandas as pd`) are re-imported rather than pickled,
+    # first, because definitions and pickled values can depend on them.
     for alias, module_name in modules.items():
         try:
             NS[alias] = importlib.import_module(module_name)
         except Exception:
             continue
-        restored.append(alias)
-    dropped = [name for name in names if name not in restored]
-    return restored, dropped
+        restored.add(alias)
+    # Classes must exist before the graph loads their instances. A definition
+    # that needs a restored variable (a default argument, say) is retried once
+    # the variables are in, and the graph is then reloaded so instances of a
+    # class that only now exists are restored too.
+    pending = _restore_definitions(definitions, restored)
+    tolerant = _restore_values(graph, restored)
+    if pending:
+        retried = len(pending)
+        pending = _restore_definitions(pending, restored)
+        if tolerant and len(pending) < retried:
+            _restore_values(graph, restored)
+    return (
+        [name for name in names if name in restored],
+        [name for name in names if name not in restored],
+    )
+
+
+def _restore_definitions(definitions, restored):
+    """Re-runs saved definitions, returning the ones that failed."""
+    failed = []
+    for name, source in definitions:
+        try:
+            _run_code(compile(source, "<restored {}>".format(name), "exec"))
+        except Exception:
+            failed.append((name, source))
+            continue
+        _definitions[name] = source
+        restored.add(name)
+    return failed
+
+
+def _restore_values(graph, restored):
+    """Loads the pickled variables into NS; returns whether placeholders were needed."""
+    if not graph:
+        return False
+    try:
+        values, tolerant = _load_graph(graph)
+    except Exception:
+        return False
+    for name, value in values.items():
+        if tolerant and _reaches_unrestorable(value):
+            continue
+        NS[name] = value
+        restored.add(name)
+    return tolerant
 
 
 def _respond(proto, req_id, payload):
@@ -702,6 +783,10 @@ def main():
             },
         )
         return
+
+    sys.modules[_DRIVER_MODULE] = sys.modules["__main__"]
+    ShellResult.__module__ = _DRIVER_MODULE
+    sys.modules["__main__"] = _SESSION_MAIN
 
     restored, dropped = _restore_state()
     _respond(
