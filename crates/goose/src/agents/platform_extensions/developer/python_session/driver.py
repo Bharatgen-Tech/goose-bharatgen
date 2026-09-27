@@ -30,9 +30,6 @@ SH_DRAIN_GRACE_SECS = 0.5
 NS_MAX_ENTRIES = 50
 NS_MAX_CHARS = 1200
 STATE_PATH = os.environ.get("GOOSE_PYTHON_SESSION_STATE_PATH", "")
-# A plain-text copy of the namespace listing next to the snapshot, so the host
-# can list a saved session without restoring it, which runs code.
-LISTING_PATH = STATE_PATH + ".listing" if STATE_PATH else ""
 STATE_VALUE_CAP = 8 * 1024 * 1024
 STATE_TOTAL_CAP = 64 * 1024 * 1024
 _DRIVER_FILE = globals().get("__file__", "<python-session-driver>")
@@ -477,10 +474,10 @@ def _size_hint(value):
     return kind.__name__
 
 
-def _namespace_listing():
+def _namespace_listing(only=None):
     entries = []
     for name, value in NS.items():
-        if name in _INTERNAL_NAMES:
+        if name in _INTERNAL_NAMES or (only is not None and name not in only):
             continue
         if isinstance(value, type(sys)):
             continue
@@ -576,6 +573,11 @@ def _save_state():
         flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(tmp, flags, 0o600)
         with os.fdopen(fd, "wb") as f:
+            # The first line lists what this snapshot restores, as a JSON string,
+            # so the host can show it without unpickling, which runs code. It
+            # shares the file, and so the atomic replace, with the pickle.
+            saved = set(keep) | {name for name, _ in definitions}
+            f.write(json.dumps(_namespace_listing(saved)).encode("ascii") + b"\n")
             pickle.dump(
                 {
                     "python": sys.version_info[:2],
@@ -587,20 +589,7 @@ def _save_state():
                 f,
             )
         os.replace(tmp, STATE_PATH)
-        _write_private(LISTING_PATH, _namespace_listing().encode("utf-8"))
     except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-
-
-def _write_private(path, data):
-    tmp = "%s.%d.tmp" % (path, os.getpid())
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        with os.fdopen(os.open(tmp, flags, 0o600), "wb") as f:
-            f.write(data)
-        os.replace(tmp, path)
-    except OSError:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
 
@@ -685,6 +674,7 @@ def _restore_state():
         return [], []
     try:
         with open(STATE_PATH, "rb") as f:
+            f.readline()
             state = pickle.load(f)
         names = list(state.get("names", []))
         if state.get("python") != sys.version_info[:2]:

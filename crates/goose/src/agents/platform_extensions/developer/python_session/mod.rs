@@ -27,6 +27,8 @@ use tokio_util::sync::CancellationToken;
 
 const PYTHON_TOOL_NAME: &str = "python";
 const MAX_IMAGES_PER_CELL: usize = 8;
+const MAX_NOTICE_NAMES: usize = 50;
+const SAVED_LISTING_MAX_BYTES: u64 = 64 * 1024;
 const NS_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const CHDIR_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_CELL_TIMEOUT_SECS: u64 = 120;
@@ -321,12 +323,12 @@ impl PythonSessionClient {
         if !restored.is_empty() || !dropped.is_empty() {
             let mut notice = String::from("[python session restored from a previous process");
             if !restored.is_empty() {
-                notice.push_str(&format!("; available again: {}", restored.join(", ")));
+                notice.push_str(&format!("; available again: {}", name_list(restored)));
             }
             if !dropped.is_empty() {
                 notice.push_str(&format!(
                     "; not restored (too large, not picklable, or no longer importable): {}",
-                    dropped.join(", ")
+                    name_list(dropped)
                 ));
             }
             notice.push(']');
@@ -342,7 +344,6 @@ impl PythonSessionClient {
             kernel.stop();
         }
         if let Some(path) = slot.state_path.take() {
-            let _ = std::fs::remove_file(listing_path(&path));
             let _ = std::fs::remove_file(path);
         }
         slot.incarnation = None;
@@ -699,10 +700,29 @@ fn is_python_call(block: &MessageContent) -> bool {
     }))
 }
 
-fn listing_path(snapshot: &Path) -> PathBuf {
-    let mut path = snapshot.as_os_str().to_owned();
-    path.push(".listing");
-    PathBuf::from(path)
+/// The first line of a snapshot is its namespace listing as a JSON string, so a
+/// saved session can be listed without unpickling it, which runs code.
+fn saved_listing(snapshot: &Path) -> Option<String> {
+    use std::io::{BufRead, Read};
+    let file = std::fs::File::open(snapshot).ok()?;
+    let mut line = String::new();
+    std::io::BufReader::new(file.take(SAVED_LISTING_MAX_BYTES))
+        .read_line(&mut line)
+        .ok()?;
+    serde_json::from_str(line.trim_end()).ok()
+}
+
+fn name_list(names: &[String]) -> String {
+    let mut list = names
+        .iter()
+        .take(MAX_NOTICE_NAMES)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > MAX_NOTICE_NAMES {
+        list.push_str(&format!(" (+{} more)", names.len() - MAX_NOTICE_NAMES));
+    }
+    list
 }
 
 fn snapshot_path(state_dir: &Path, session: &Session) -> PathBuf {
@@ -835,7 +855,7 @@ impl McpClientTrait for PythonSessionClient {
                 },
                 None => self
                     .cached_listing(session_id)
-                    .or_else(|| std::fs::read_to_string(listing_path(&snapshot)).ok())?,
+                    .or_else(|| saved_listing(&snapshot))?,
             },
             Err(_) => self.cached_listing(session_id)?,
         };

@@ -148,7 +148,7 @@ async fn saved_namespace_is_listed_without_restoring_it() {
     let (client, session_id, dir, context) = setup().await;
     let marker = dir.path().join("class-body-ran");
     let cell = format!(
-        "class Tracked:\n    open({:?}, 'a').write('x')\nkept = Tracked()",
+        "import socket\nclass Tracked:\n    open({:?}, 'a').write('x')\nkept = Tracked()\nsock = socket.socket()",
         marker.display().to_string()
     );
     run_cell(&client, &session_id, &cell).await;
@@ -164,6 +164,10 @@ async fn saved_namespace_is_listed_without_restoring_it() {
     assert!(
         listing.contains("kept") && listing.contains("Tracked"),
         "got: {listing}"
+    );
+    assert!(
+        !listing.contains("sock"),
+        "a variable the snapshot cannot restore is not listed: {listing}"
     );
     assert_eq!(
         std::fs::read_to_string(&marker).unwrap(),
@@ -279,4 +283,30 @@ async fn listing_follows_once_a_python_call_is_hidden_from_the_agent() {
         .await
         .expect("a hidden python call brings the namespace listing");
     assert!(listing.contains("summarized_away"), "got: {listing}");
+}
+
+#[tokio::test]
+#[serial]
+async fn restore_notice_bounds_the_names_it_lists() {
+    if !python_available() {
+        eprintln!("skipping: python3 not available");
+        return;
+    }
+    let (client, session_id, _dir, _) = setup().await;
+
+    run_cell(
+        &client,
+        &session_id,
+        "globals().update({'v%d' % i: i for i in range(200)})",
+    )
+    .await;
+    run_cell(&client, &session_id, "import os; os._exit(3)").await;
+
+    let text = result_text(&run_cell(&client, &session_id, "v199").await);
+    assert!(text.contains("=> 199"), "got: {text}");
+    assert!(text.contains("(+150 more)"), "got: {text}");
+    assert!(
+        !text.contains("v120,"),
+        "names past the cap are counted, not listed"
+    );
 }
