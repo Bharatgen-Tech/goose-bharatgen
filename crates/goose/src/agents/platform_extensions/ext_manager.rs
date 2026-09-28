@@ -3,6 +3,7 @@ use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::extension_manager::{is_hidden_extension, ExtensionMutation};
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::tool_execution::ToolCallContext;
+use crate::config::extensions::name_to_key;
 use crate::config::{get_all_extensions, get_extension_by_name};
 use crate::session::SessionType;
 use anyhow::Result;
@@ -169,15 +170,24 @@ impl ExtensionManagerClient {
         }
 
         let (mutation, text) = match action {
-            ManageExtensionAction::Disable => (
-                ExtensionMutation::Disable {
-                    name: extension_name.clone(),
-                },
-                format!(
-                    "The extension '{}' has been disabled successfully",
-                    extension_name
-                ),
-            ),
+            ManageExtensionAction::Disable => {
+                if name_to_key(&extension_name) == "extensionmanager" {
+                    return Err(ErrorData::new(
+                        ErrorCode::INVALID_REQUEST,
+                        "The Extension Manager cannot disable itself. Ask the user to disable it from goose settings instead.".to_string(),
+                        None,
+                    ));
+                }
+                (
+                    ExtensionMutation::Disable {
+                        name: extension_name.clone(),
+                    },
+                    format!(
+                        "The extension '{}' has been disabled successfully",
+                        extension_name
+                    ),
+                )
+            }
             ManageExtensionAction::Enable => {
                 if get_extension_by_name(&extension_name).is_none() {
                     return Err(ErrorData::new(
@@ -558,9 +568,13 @@ mod tests {
     }
 
     fn manage_arguments(action: &str) -> JsonObject {
+        manage_arguments_for(action, "developer")
+    }
+
+    fn manage_arguments_for(action: &str, extension_name: &str) -> JsonObject {
         serde_json::json!({
             "action": action,
-            "extension_name": "developer",
+            "extension_name": extension_name,
         })
         .as_object()
         .unwrap()
@@ -621,6 +635,33 @@ mod tests {
                 name: "developer".to_string()
             })
         );
+    }
+
+    #[tokio::test]
+    async fn extension_manager_cannot_disable_itself() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(ExtensionManager::new_without_provider(
+            temp_dir.path().to_path_buf(),
+        ));
+        let client = client_for(&manager);
+        let user_id = create_session(&manager, SessionType::User).await;
+
+        for name in [
+            "Extension Manager",
+            "extensionmanager",
+            "Extension Manager ",
+        ] {
+            let result = client
+                .call_tool(
+                    &ToolCallContext::new(user_id.clone(), None, None),
+                    MANAGE_EXTENSIONS_TOOL_NAME,
+                    Some(manage_arguments_for("disable", name)),
+                    CancellationToken::default(),
+                )
+                .await
+                .unwrap();
+            assert!(result.is_error.unwrap_or(false));
+        }
     }
 
     #[tokio::test]
