@@ -668,7 +668,9 @@ pub fn create_responses_request_for_model(
     // All models routed here are responses-capable; temperature is rejected
     // by the API for reasoning models regardless of whether an explicit
     // effort suffix was provided.
-    let is_reasoning_model = is_openai_responses_model(&model_name);
+    let is_reasoning_model = model_config
+        .reasoning
+        .unwrap_or_else(|| is_openai_responses_model(&model_name));
     let reasoning_effort = if is_reasoning_model {
         if let Some(effort) = legacy_reasoning_effort.as_deref() {
             if effort.eq_ignore_ascii_case("none") {
@@ -2148,6 +2150,23 @@ mod tests {
             result["max_output_tokens"],
             model_config.max_tokens.unwrap()
         );
+    }
+
+    #[test]
+    fn explicit_reasoning_metadata_overrides_model_name_in_responses() {
+        let mut config = ModelConfig::new("future-reasoner")
+            .with_thinking_effort(crate::thinking::ThinkingEffort::High);
+        config.reasoning = Some(true);
+        let payload = create_responses_request(&config, "system", &[], &[]).unwrap();
+        assert_eq!(payload["reasoning"]["effort"], "high");
+        assert!(payload.get("temperature").is_none());
+
+        config.model_name = "gpt-5.4".to_string();
+        config.reasoning = Some(false);
+        config.temperature = Some(0.5);
+        let payload = create_responses_request(&config, "system", &[], &[]).unwrap();
+        assert!(payload.get("reasoning").is_none());
+        assert_eq!(payload["temperature"], 0.5);
     }
 
     #[test]
