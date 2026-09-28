@@ -23,5 +23,6 @@ failure modes that matter, so goose can write GDK programs without being told th
 surface first. It is enabled by default — no installation needed.
 
 To give another agent the same context, download
-[`gdk.md`](pathname:///files/skills/gdk.md) and drop it in that agent's skills directory
-(for goose that is `~/.agents/skills/`).
+[`gdk.md`](pathname:///files/skills/gdk.md) and install it in that agent's skills
+directory. goose discovers skills by looking for files named `SKILL.md`, so save it
+as `~/.agents/skills/gdk/SKILL.md`.

@@ -84,15 +84,24 @@ library through JNA and will warn or fail without it.
 
 | Function | Arguments |
 | --- | --- |
-| `openai_provider` | `api_key` |
+| `openai_provider` | `api_key`, `base_url` (optional) |
+| `openai_provider_simple` | `api_key` |
 | `anthropic_provider` | `api_key`, `base_url` (optional), `beta_headers` |
 | `groq_provider` | `api_key` |
 | `databricks_provider` | `host`, `token` |
-| `databricks_v2_provider` | `host`, `token` |
+| `databricks_v2_provider` | `host`, `token`, `gateway_path` (optional) |
 | `declarative_provider_from_json` | `json` |
 
-Each has a matching `*_default_model()` returning a model name string, so you
-never hard-code one.
+"Optional" means UniFFI supplies a default for Python and Kotlin callers only.
+**Rust has no default arguments**: pass every argument, using `None` for the
+optional ones (`openai_provider(api_key, None)`,
+`databricks_v2_provider(host, token, None)`), or call `openai_provider_simple(api_key)`
+for the one-argument OpenAI case.
+
+Each named provider constructor has a matching `*_default_model()` returning a
+model name string, so you never hard-code one. `declarative_provider_from_json`
+is the exception — there is no `declarative_*_default_model()`; the model comes
+from the JSON configuration, so read it from there or from your own config.
 
 Any provider speaking an OpenAI- or Anthropic-compatible API can be defined in
 JSON instead of new Rust code. `${ENV_VAR}` placeholders in that JSON are resolved
@@ -107,15 +116,16 @@ provider = goose.declarative_provider_from_json(open("deepseek.json").read())
 
 | Method | Purpose |
 | --- | --- |
-| `name()` | Provider name |
-| `supported_features()` | `Vec<Feature>`: `Tools`, `Streaming`, `Images`, `JsonSchema`, `Reasoning` |
+| `name()` | Provider name (synchronous) |
+| `supported_features()` | `Vec<Feature>`: `Tools`, `Streaming`, `Images`, `Documents`, `JsonSchema`, `Reasoning` (synchronous) |
 | `context_limit(model)` | Context window size for a model (async) |
 | `stream(model, system, messages, tools)` | Returns a `ProviderStream` (async) |
 | `complete(model, system, messages, tools)` | One-shot `ProviderCompletion` (async) |
 | `compact(model_name, messages, templates)` | Summarize a conversation past the context window (async) |
 
 Check `supported_features()` rather than assuming. Sending tools to a provider
-without `Tools`, or images without `Images`, is a runtime failure you can predict.
+without `Tools`, images without `Images`, or PDFs and other files without
+`Documents`, is a runtime failure you can predict.
 
 ### Streaming
 
@@ -125,7 +135,7 @@ without `Tools`, or images without `Images`, is a runtime failure you can predic
 | Chunk | Meaning |
 | --- | --- |
 | `TextChunk` | Assistant text |
-| `ToolChunk` | Tool call request — `id`, `name`, `arguments_json` |
+| `ToolChunk` | Tool call request — `id`, `name`, `arguments_json`, `index`, `provider_metadata_json` |
 | `ThinkingChunk` / `RedactedThinkingChunk` | Reasoning output |
 | `EndChunk` | Stream finished, carries final token `Usage` |
 | `ErrorChunk` | **Mid-stream failure**, carries a `GooseStreamError` |
@@ -140,9 +150,15 @@ assumes today's variant list is final.
 `Tool`, and `content` is a list of `MessageContent`:
 
 `Text { text }`, `Image { mime_type, data }`,
-`ToolRequest { id, name, arguments_json }`,
+`Document { mime_type, data, name }`,
+`ToolRequest { id, name, arguments_json, provider_metadata_json, tool_error_json }`,
 `ToolResult { id, success, content_json }`,
 `Thinking { thinking, signature }`, `RedactedThinking { data }`.
+
+`Document` is the only way to send PDFs and other files — gate it on the
+`Documents` feature. The two trailing `ToolRequest` fields are `Option<String>`
+and default to `None` for Python and Kotlin callers; **Rust callers must supply
+them explicitly**.
 
 `ProviderTool { name, description, input_schema_json, annotations_json? }`.
 
@@ -154,6 +170,11 @@ To carry out a tool call: read a `ToolChunk`, parse `arguments_json`, run the
 tool, then append an `Assistant` message containing the `ToolRequest` followed by
 a `Tool` message containing a `ToolResult` with **the same `id`**. Mismatched or
 missing ids are the most common cause of a provider rejecting the next turn.
+
+Copy the chunk's `provider_metadata_json` into the replayed `ToolRequest`. It
+carries provider reasoning and thought signatures that some providers require on
+the following turn; dropping it (or passing `None`) silently degrades the
+conversation.
 
 ### Model config
 
@@ -186,8 +207,13 @@ concurrent requests stay separate) and `write(request_id, record)`.
 
 Errors raised **before** the stream starts are thrown as `GooseError`
 (`GooseException` in Kotlin). Errors **mid-stream** arrive as an `ErrorChunk`
-carrying a `GooseStreamError { kind, message, retry_after_ms }`. You must handle
-both paths — a `try`/`catch` around `stream()` alone will miss mid-stream failures.
+carrying a `GooseStreamError { kind, message, retry_after_ms }`. `next_chunk()`
+can also *throw* a `GooseError` — a configured `timeout_ms` surfaces as
+`GooseError::Timeout` from the polling call itself, not as an `ErrorChunk`.
+
+So there are three things to handle, not two: errors from `stream()`, errors from
+each `next_chunk()` call, and `ErrorChunk` values inside the stream. A
+`try`/`catch` around `stream()` alone misses both of the others.
 
 Both share the same kinds: `RateLimited`, `OutputTokenLimitExceeded`,
 `ContextLengthExceeded`, `Authentication`, `Timeout`, `ProviderUnavailable`,
@@ -238,8 +264,9 @@ variants — this list grows.
 ### Permissions
 
 goose asks the client to approve tool calls via `RequestPermissionRequest`. Respond
-with `RequestPermissionOutcome::Selected(option_id)` from `request.options`, or
-`Cancelled`.
+with an option id from `request.options`, or `Cancelled`. In Rust the id is
+wrapped: `RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id))`
+— see `crates/goose-sdk/examples/acp_client.rs`.
 
 **Auto-approving everything is only acceptable in examples and tests.** In a real
 program, surface the request to a human or apply an explicit policy. This is the
@@ -276,7 +303,9 @@ not exist, trust the crate.
 the Rust crate, PyPI package, and Maven artifact share one version number — keep
 them identical across a polyglot project.
 
-**Never hard-code model names.** Use `*_default_model()`. Never hard-code context
+**Never hard-code model names.** Use the `*_default_model()` function for the
+named provider you constructed; declarative providers have none, so take the model
+from their JSON configuration. Never hard-code context
 windows either — ask `context_limit()`.
 
 **Keep secrets out of source.** Read API keys from the environment, or use a
@@ -295,16 +324,19 @@ cache-hit numbers come from. Dropping a stream early loses accounting.
 
 **Match the language's idioms.**
 
-- *Python*: everything on `Provider` is `async` — use `asyncio`, and
-  `while chunk := await stream.next_chunk():`.
+- *Python*: `context_limit`, `stream`, `complete`, and `compact` are `async` — use
+  `asyncio`, and `while chunk := await stream.next_chunk():`. `name()` and
+  `supported_features()` are plain synchronous calls; awaiting them fails at runtime.
 - *Kotlin*: prefer `provider.streamFlow(model, system, messages, tools)` over a
   manual `nextChunk()` loop; `tools` defaults to empty. Suspending functions map
   to coroutines and errors surface as `GooseException` subclasses. The
   `providers.openai.provider(...)` / `providers.openai.defaultModel()` helpers are
   thin wrappers over the generated `openaiProvider(...)` / `openaiDefaultModel()`.
-- *Rust*: `ProviderModelConfig` implements `Default`, so
-  `ProviderModelConfig { model_name: ..., ..Default::default() }` is the clean
-  construction. Provider constructors return `Arc<Provider>`.
+- *Rust*: there are no default arguments or `Default` impls on the UniFFI records.
+  `ProviderModelConfig` must be constructed with every field spelled out
+  (`model_name` plus `None`/`false` for the rest), and optional constructor
+  arguments must be passed explicitly as `None`. Provider constructors return
+  `Arc<Provider>`.
 
 **Install the request logger once, at startup.** It is process-wide and a second
 install fails.
