@@ -154,6 +154,29 @@ async fn namespace_survives_process_restart_via_state_snapshot() {
 }
 
 #[tokio::test]
+async fn failed_save_removes_the_stale_snapshot() {
+    require_python!();
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state.pkl");
+    let mut kernel = Kernel::spawn(&spec(dir.path(), Some(&state)))
+        .await
+        .expect("kernel should spawn");
+
+    assert!(exec(&mut kernel, "kept = 1").await.saved);
+    assert!(state.is_file());
+    // A definition's source is saved verbatim, so one this large exceeds the
+    // snapshot's share for definitions.
+    let big_definition = format!("def big():\n    return '{}'\nkept = 2", "a".repeat(9 << 20));
+    let outcome = exec(&mut kernel, &big_definition).await;
+    assert!(outcome.error.is_none(), "error: {:?}", outcome.error);
+    assert!(!outcome.saved);
+    assert!(
+        !state.exists(),
+        "a snapshot older than the namespace must not be restored"
+    );
+}
+
+#[tokio::test]
 async fn functions_and_classes_defined_in_cells_survive_restart() {
     require_python!();
     let dir = tempfile::tempdir().unwrap();
@@ -186,7 +209,19 @@ def plain_wrapped(v):
     return v + 1
 b = Box(3)
 handlers = [normalize]
-r = sh("echo hi")"#,
+r = sh("echo hi")
+def inner():
+    return 'inner'
+def middle(f=inner):
+    return f()
+def outer(f=middle):
+    return f()
+# Redefining moves a definition to the end of the saved order, which now
+# lists each function before the one its default needs.
+def middle(f=inner):
+    return f()
+def inner():
+    return 'inner'"#,
     )
     .await;
     assert!(outcome.error.is_none(), "error: {:?}", outcome.error);
@@ -203,12 +238,12 @@ r = sh("echo hi")"#,
     let outcome = exec(
         &mut revived,
         "(normalize(' Y '), b.scaled(), isinstance(b, Box), fib(20), with_default(), \
-         handlers[0] is normalize, r.out.strip(), plain_wrapped(1))",
+         handlers[0] is normalize, r.out.strip(), plain_wrapped(1), outer())",
     )
     .await;
     assert_eq!(
         outcome.value.as_deref(),
-        Some("('y', 30, True, 6765, 10, True, 'hi', 2)"),
+        Some("('y', 30, True, 6765, 10, True, 'hi', 2, 'inner')"),
         "error: {:?}",
         outcome.error
     );

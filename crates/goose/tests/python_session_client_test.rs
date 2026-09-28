@@ -1,13 +1,21 @@
+use futures::StreamExt;
 use goose::agents::extension::PlatformExtensionContext;
 use goose::agents::extension_manager::ExtensionManager;
 use goose::agents::mcp_client::McpClientTrait;
 use goose::agents::platform_extensions::developer::python_session::PythonSessionClient;
-use goose::agents::ToolCallContext;
+use goose::agents::{Agent, AgentEvent, ExtensionConfig, SessionConfig, ToolCallContext};
 use goose::config::GooseMode;
 use goose::conversation::message::Message;
+use goose::providers::base::{stream_from_single_message, MessageStream, Provider};
 use goose::session::SessionType;
+use goose_providers::conversation::token_usage::{ProviderUsage, Usage};
+use goose_providers::errors::ProviderError;
+use goose_providers::model::ModelConfig;
+use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
 use serde_json::json;
 use serial_test::serial;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 fn python_available() -> bool {
@@ -309,4 +317,154 @@ async fn restore_notice_bounds_the_names_it_lists() {
         !text.contains("v120,"),
         "names past the cap are counted, not listed"
     );
+}
+
+const TURN_PROMPT: &str = "Sort the orders";
+
+/// Fails the first request of the turn with a context overflow, then records what the retry
+/// after recovery compaction sends.
+struct OverflowOnceProvider {
+    overflowed: AtomicBool,
+    requests: Mutex<Vec<Vec<Message>>>,
+}
+
+#[async_trait::async_trait]
+impl Provider for OverflowOnceProvider {
+    fn get_name(&self) -> &str {
+        "overflow-once"
+    }
+
+    async fn stream(
+        &self,
+        _model_config: &ModelConfig,
+        _system_prompt: &str,
+        messages: &[Message],
+        _tools: &[rmcp::model::Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        // Side requests (the session title, the compaction summary) send a single
+        // message and carry the conversation, if at all, in their prompt.
+        let is_turn_request = messages.len() > 1;
+        let reply = if !is_turn_request {
+            "<summary of the conversation>"
+        } else if !self.overflowed.swap(true, Ordering::SeqCst) {
+            return Err(ProviderError::ContextLengthExceeded("too long".to_string()));
+        } else {
+            self.requests.lock().unwrap().push(messages.to_vec());
+            "done"
+        };
+        Ok(stream_from_single_message(
+            Message::assistant().with_text(reply),
+            ProviderUsage::new(
+                "mock-model".to_string(),
+                Usage::new(Some(100), Some(10), Some(110)),
+            ),
+        ))
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn retry_after_recovery_compaction_lists_the_namespace() {
+    if !python_available() {
+        eprintln!("skipping: python3 not available");
+        return;
+    }
+    isolate_data_dir();
+    std::env::set_var("GOOSE_DEVELOPER_MODE", "python_session");
+    for use_state_machine in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = Agent::new();
+        let session_manager = agent.config.session_manager.clone();
+        let session = session_manager
+            .create_session(
+                dir.path().to_path_buf(),
+                "recovery-compaction".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        let writer =
+            PythonSessionClient::new(agent.extension_manager.get_context().clone()).unwrap();
+        run_cell(&writer, &session.id, "orders = [3, 1, 2]").await;
+        drop(writer);
+        let call = CallToolRequestParams::new("developer__python");
+        for message in [
+            Message::user().with_text("Load the orders"),
+            Message::assistant().with_tool_request("call_1", Ok(call)),
+            Message::user().with_tool_response(
+                "call_1",
+                Ok(CallToolResult::success(vec![ContentBlock::text("ok")])),
+            ),
+            Message::assistant().with_text("Loaded them into `orders`."),
+        ] {
+            session_manager
+                .add_message(&session.id, &message)
+                .await
+                .unwrap();
+        }
+
+        agent
+            .extension_manager
+            .add_extension(
+                ExtensionConfig::Platform {
+                    name: "developer".to_string(),
+                    description: String::new(),
+                    display_name: None,
+                    bundled: Some(true),
+                    available_tools: vec![],
+                },
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let provider = Arc::new(OverflowOnceProvider {
+            overflowed: AtomicBool::new(false),
+            requests: Mutex::new(Vec::new()),
+        });
+        agent
+            .update_provider(
+                provider.clone(),
+                ModelConfig::new("mock-model"),
+                &session.id,
+            )
+            .await
+            .unwrap();
+
+        let session_config = SessionConfig {
+            id: session.id.clone(),
+            schedule_id: None,
+            max_turns: None,
+            retry_config: None,
+        };
+        let stream = agent
+            .reply(
+                Message::user().with_text(TURN_PROMPT),
+                session_config,
+                use_state_machine,
+                None,
+            )
+            .await
+            .unwrap();
+        let events: Vec<_> = stream.collect().await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Ok(AgentEvent::HistoryReplaced(_)))),
+            "the overflow should trigger recovery compaction"
+        );
+
+        let requests = provider.requests.lock().unwrap();
+        let retry = requests.first().expect("the turn should be retried");
+        let sent: Vec<String> = retry.iter().map(Message::as_concat_text).collect();
+        assert!(
+            sent.iter()
+                .any(|text| text.contains("<python-session>") && text.contains("orders")),
+            "use_state_machine={use_state_machine}: the retry should list the namespace, got: {sent:#?}"
+        );
+    }
+    std::env::remove_var("GOOSE_DEVELOPER_MODE");
 }

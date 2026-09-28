@@ -122,6 +122,7 @@ In Python session mode the Developer extension exposes one tool, `python`, which
   Snapshots are removed when the session is deleted.
 - Sessions idle for 30 minutes are shut down and restored from the snapshot on the next call.
   A session whose latest state could not be saved stays running instead, so nothing is lost.
+  Its older snapshot is removed, so a later restart starts fresh instead of restoring outdated values.
 
 ## Limitations
 

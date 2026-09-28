@@ -709,16 +709,18 @@ def _restore_state():
             continue
         restored.add(alias)
     # Classes must exist before the graph loads their instances. A definition
-    # that needs a restored variable (a default argument, say) is retried once
-    # the variables are in, and the graph is then reloaded so instances of a
-    # class that only now exists are restored too.
+    # that needs a restored variable (a default argument, say) or another
+    # definition is retried until a pass makes no progress, reloading the graph
+    # after each pass so instances of a class that only now exists are restored too.
     pending = _restore_definitions(definitions, restored)
     tolerant = _restore_values(graph, restored)
-    if pending:
+    while pending:
         retried = len(pending)
         pending = _restore_definitions(pending, restored)
-        if tolerant and len(pending) < retried:
-            _restore_values(graph, restored)
+        if len(pending) == retried:
+            break
+        if tolerant:
+            tolerant = _restore_values(graph, restored)
     return (
         [name for name in names if name in restored],
         [name for name in names if name not in restored],
@@ -841,9 +843,14 @@ def main():
             if op == "exec":
                 result = _run_cell(req.get("code", ""))
                 try:
-                    result["saved"] = _save_state()
+                    saved = _save_state()
                 except BaseException:
-                    result["saved"] = False
+                    saved = False
+                if not saved and STATE_PATH:
+                    # An older snapshot would restore values this cell changed.
+                    with contextlib.suppress(OSError):
+                        os.unlink(STATE_PATH)
+                result["saved"] = saved
                 _respond(proto, req_id, result)
             elif op == "ns":
                 _respond(proto, req_id, {"ok": True, "ns": _namespace_listing()})
