@@ -5567,7 +5567,7 @@ dependencies = [
 
 [[package]]
 name = "goose-sdk"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.10-prfix12527"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-schema",

@@ -1,6 +1,6 @@
 [package]
 name = "goose-sdk"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.10-prfix12527"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
