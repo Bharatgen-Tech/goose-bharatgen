@@ -134,6 +134,7 @@ pub struct OpenAiProvider {
     skip_canonical_filtering: bool,
     preserve_thinking_context: bool,
     native_openai: bool,
+    explicit_base_path: bool,
     #[serde(skip)]
     n_ctx_cache: Arc<Mutex<HashMap<String, CachedContextLimit>>>,
 }
@@ -156,6 +157,7 @@ pub struct OpenAiProviderBuilder {
     skip_canonical_filtering: bool,
     preserve_thinking_context: bool,
     native_openai: bool,
+    explicit_base_path: bool,
 }
 
 impl OpenAiProviderBuilder {
@@ -173,6 +175,7 @@ impl OpenAiProviderBuilder {
             skip_canonical_filtering: false,
             preserve_thinking_context: false,
             native_openai: false,
+            explicit_base_path: false,
         }
     }
 
@@ -249,6 +252,11 @@ impl OpenAiProviderBuilder {
         self
     }
 
+    pub fn explicit_base_path(mut self, explicit_base_path: bool) -> Self {
+        self.explicit_base_path = explicit_base_path;
+        self
+    }
+
     pub fn build(self) -> OpenAiProvider {
         OpenAiProvider {
             api_client: self.api_client,
@@ -263,6 +271,7 @@ impl OpenAiProviderBuilder {
             skip_canonical_filtering: self.skip_canonical_filtering,
             preserve_thinking_context: self.preserve_thinking_context,
             native_openai: self.native_openai,
+            explicit_base_path: self.explicit_base_path,
             n_ctx_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -363,6 +372,7 @@ impl OpenAiProvider {
             skip_canonical_filtering: false,
             preserve_thinking_context: false,
             native_openai: false,
+            explicit_base_path: false,
             n_ctx_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -515,16 +525,65 @@ impl OpenAiProvider {
         payload
     }
 
+    fn validate_native_responses_model(&self, model_name: &str) -> Result<(), ProviderError> {
+        if !self.native_openai {
+            return Ok(());
+        }
+        let (base_model, _) = crate::formats::openai::extract_reasoning_effort(model_name);
+        if base_model == "o1-mini" || base_model.starts_with("o1-mini-20") {
+            return Err(ProviderError::RequestFailed(
+                "o1-mini is unsupported: it cannot use Responses or call tools".to_string(),
+            ));
+        }
+        // Explicit paths may select Chat, but they do not turn a non-agent
+        // model into a text/tool model. Unknown IDs on explicit paths are
+        // passed through so custom models can still work.
+        let registry = crate::canonical::CanonicalModelRegistry::bundled().map_err(|error| {
+            ProviderError::RequestFailed(format!("OpenAI model catalog is unavailable: {error}"))
+        })?;
+        let canonical_name = crate::canonical::strip_version_suffix(&base_model);
+        let Some(model) = registry
+            .get("openai", &base_model)
+            .or_else(|| registry.get("openai", &canonical_name))
+        else {
+            if self.explicit_base_path
+                || Self::normalize_base_path(&self.base_path) != OPEN_AI_DEFAULT_BASE_PATH
+            {
+                return Ok(());
+            }
+            return Err(ProviderError::RequestFailed(format!(
+                "OpenAI model '{model_name}' has no known text/tool capabilities; update the model catalog or set OPENAI_BASE_PATH explicitly"
+            )));
+        };
+        if !model.tool_call
+            || !model
+                .modalities
+                .input
+                .contains(&crate::canonical::Modality::Text)
+            || !model
+                .modalities
+                .output
+                .contains(&crate::canonical::Modality::Text)
+        {
+            return Err(ProviderError::RequestFailed(format!(
+                "OpenAI model '{model_name}' is not a text/tool model; choose a compatible model"
+            )));
+        }
+        Ok(())
+    }
+
     fn should_use_responses_api_for_provider(&self, model_name: &str) -> bool {
         if Self::PROVIDERS_NEEDING_STANDARD_CHAT_PARAMS.contains(&self.name.as_str()) {
             return false;
         }
 
         let base_path = Self::normalize_base_path(&self.base_path);
-        if self.native_openai && base_path == OPEN_AI_DEFAULT_BASE_PATH {
-            // The direct API prefers Responses; unsupported legacy models are
-            // not offered by the current catalog.
+        if self.native_openai && !self.explicit_base_path && base_path == OPEN_AI_DEFAULT_BASE_PATH
+        {
             return true;
+        }
+        if self.native_openai && self.explicit_base_path {
+            return Self::is_responses_path(&base_path);
         }
         Self::should_use_responses_api(model_name, &self.base_path)
     }
@@ -789,6 +848,7 @@ impl Provider for OpenAiProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
+        self.validate_native_responses_model(&model_config.model_name)?;
         if self.should_use_responses_api_for_provider(&model_config.model_name) {
             let (wire_model, _) =
                 crate::formats::openai::extract_reasoning_effort(&model_config.model_name);
@@ -1033,6 +1093,7 @@ mod tests {
             skip_canonical_filtering: false,
             preserve_thinking_context: false,
             native_openai: false,
+            explicit_base_path: false,
             n_ctx_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -1279,8 +1340,51 @@ mod tests {
         provider.base_path = "chat/completions".to_string();
         assert!(!provider.should_use_responses_api_for_provider("gpt-4o"));
         provider.base_path = "v1/chat/completions".to_string();
+        provider.explicit_base_path = true;
+        assert!(!provider.should_use_responses_api_for_provider("gpt-5.6-terra"));
+        assert!(!provider.should_use_responses_api_for_provider("gpt-4o"));
+        provider.base_path = "v1/responses".to_string();
+        assert!(provider.should_use_responses_api_for_provider("gpt-4o"));
+        provider.explicit_base_path = false;
+        provider.base_path = "v1/chat/completions".to_string();
         provider.native_openai = false;
         assert!(!provider.should_use_responses_api_for_provider("gpt-4o"));
+    }
+
+    #[test]
+    fn native_responses_requires_known_text_tool_capabilities() {
+        let mut provider = make_provider("openai");
+        provider.native_openai = true;
+        for model in [
+            "gpt-4o",
+            "gpt-5.6-terra",
+            "gpt-6-astra",
+            "gpt-4o-2024-08-06",
+        ] {
+            assert!(
+                provider.validate_native_responses_model(model).is_ok(),
+                "{model}"
+            );
+        }
+        for model in [
+            "text-embedding-3-large",
+            "gpt-image-1",
+            "o1-mini",
+            "future-model",
+        ] {
+            assert!(
+                provider.validate_native_responses_model(model).is_err(),
+                "{model}"
+            );
+        }
+        provider.explicit_base_path = true;
+        assert!(provider
+            .validate_native_responses_model("future-model")
+            .is_ok());
+        assert!(provider
+            .validate_native_responses_model("text-embedding-3-large")
+            .is_err());
+        assert!(provider.validate_native_responses_model("o1-mini").is_err());
     }
 
     #[test]
@@ -1574,6 +1678,7 @@ mod tests {
             skip_canonical_filtering: false,
             preserve_thinking_context: false,
             native_openai: false,
+            explicit_base_path: false,
             n_ctx_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
