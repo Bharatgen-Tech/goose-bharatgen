@@ -3029,7 +3029,11 @@ mod tests {
             .with_id("delegate-message")
             .with_text("scheduled");
         manager
-            .save_foreground_delegation_message(&parent.id, &delegate_message, &[child.id.clone()])
+            .save_foreground_delegation_message(
+                &parent.id,
+                &delegate_message,
+                std::slice::from_ref(&child.id),
+            )
             .await?;
         assert_eq!(
             manager.pending_foreground_subagents(&parent.id).await?,
@@ -3075,7 +3079,7 @@ mod tests {
         );
 
         manager
-            .deliver_foreground_subagents(&parent.id, &delivery, &[child.id.clone()])
+            .deliver_foreground_subagents(&parent.id, &delivery, std::slice::from_ref(&child.id))
             .await?;
         assert!(manager
             .pending_foreground_subagents(&parent.id)
@@ -3105,7 +3109,7 @@ mod tests {
             .save_foreground_delegation_message(
                 &parent.id,
                 &next_delegate_message,
-                &[child.id.clone()],
+                std::slice::from_ref(&child.id),
             )
             .await?;
         assert_eq!(
@@ -3123,7 +3127,7 @@ mod tests {
             .await?
             .is_empty());
         manager
-            .deliver_foreground_subagents(&parent.id, &delivery, &[child.id.clone()])
+            .deliver_foreground_subagents(&parent.id, &delivery, std::slice::from_ref(&child.id))
             .await?;
         assert_eq!(
             manager
@@ -3140,7 +3144,7 @@ mod tests {
             .save_foreground_delegation_message(
                 &parent.id,
                 &next_delegate_message,
-                &[child.id.clone()],
+                std::slice::from_ref(&child.id),
             )
             .await?;
         manager
