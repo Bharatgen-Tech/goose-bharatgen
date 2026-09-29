@@ -522,9 +522,9 @@ impl OpenAiProvider {
 
         let base_path = Self::normalize_base_path(&self.base_path);
         if self.native_openai && base_path == OPEN_AI_DEFAULT_BASE_PATH {
-            // The official API supports Responses for both GPT-4o and newer
-            // text/tool models. o1-mini predates Responses and has no tool calls.
-            return !model_name.starts_with("o1-mini");
+            // The direct API prefers Responses; unsupported legacy models are
+            // not offered by the current catalog.
+            return true;
         }
         Self::should_use_responses_api(model_name, &self.base_path)
     }
@@ -1276,7 +1276,6 @@ mod tests {
                 "{model}"
             );
         }
-        assert!(!provider.should_use_responses_api_for_provider("o1-mini"));
         provider.base_path = "chat/completions".to_string();
         assert!(!provider.should_use_responses_api_for_provider("gpt-4o"));
         provider.base_path = "v1/chat/completions".to_string();

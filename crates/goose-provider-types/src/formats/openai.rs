@@ -1719,12 +1719,6 @@ pub fn create_request_for_model_with_options(
     for_streaming: bool,
     format_options: OpenAiFormatOptions,
 ) -> anyhow::Result<Value, Error> {
-    if model_config.model_name == "o1-mini" || model_config.model_name.starts_with("o1-mini-20") {
-        return Err(anyhow!(
-            "o1-mini model is not currently supported since goose uses tool calling and o1-mini does not support it. Please use o1 or o3 models instead."
-        ));
-    }
-
     let (model_name, legacy_reasoning_effort) = extract_reasoning_effort(capability_model_name);
     let is_reasoning_model = model_config
         .reasoning
@@ -1904,7 +1898,10 @@ pub fn openai_reasoning_effort_for_thinking(
     model_name: &str,
     effort: ThinkingEffort,
 ) -> Option<String> {
-    let supported = openai_reasoning_efforts_for_model(model_name);
+    let catalog = crate::canonical::maybe_get_canonical_model("openai", model_name);
+    let catalog_efforts = catalog
+        .as_ref()
+        .and_then(|model| model.reasoning_efforts.as_deref());
 
     let preferred: &[&str] = match effort {
         ThinkingEffort::Off => &["none", "low"],
@@ -1916,7 +1913,10 @@ pub fn openai_reasoning_effort_for_thinking(
 
     preferred
         .iter()
-        .find(|level| supported.contains(level))
+        .find(|level| match catalog_efforts {
+            Some(values) => values.iter().any(|value| value == **level),
+            None => openai_reasoning_efforts_for_model(model_name).contains(level),
+        })
         .map(|level| (*level).to_string())
 }
 
