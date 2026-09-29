@@ -10,7 +10,7 @@ use crate::formats::openai::{
     sanitize_function_name,
 };
 use crate::mcp_utils::extract_text_from_resource;
-use crate::model::ModelConfig;
+use crate::model::{is_goose_internal_request_param, ModelConfig};
 use crate::utils::{sanitize_unicode_tags, strip_unicode_tags};
 use anyhow::{anyhow, Error};
 use async_stream::try_stream;
@@ -745,6 +745,33 @@ pub fn create_responses_request_for_model(
             .as_object_mut()
             .unwrap()
             .insert("max_output_tokens".to_string(), json!(max_tokens));
+    }
+
+    if let Some(params) = &model_config.request_params {
+        let object = payload.as_object_mut().unwrap();
+        for (key, value) in params {
+            if is_goose_internal_request_param(key) {
+                continue;
+            }
+            if matches!(
+                key.as_str(),
+                "model"
+                    | "input"
+                    | "messages"
+                    | "tools"
+                    | "stream"
+                    | "stream_options"
+                    | "reasoning"
+                    | "reasoning_mode"
+                    | "reasoning_effort"
+                    | "max_tokens"
+                    | "max_completion_tokens"
+                    | "response_format"
+            ) {
+                continue;
+            }
+            object.insert(key.clone(), value.clone());
+        }
     }
 
     Ok(payload)
