@@ -3126,9 +3126,8 @@ You review code."#;
         };
 
         // Set env var to a different value — recipe should still win
-        std::env::set_var("GOOSE_SUBAGENT_MAX_TURNS", "99");
+        let _env = env_lock::lock_env([("GOOSE_SUBAGENT_MAX_TURNS", Some("99"))]);
         let result = client.resolve_max_turns(&session);
-        std::env::remove_var("GOOSE_SUBAGENT_MAX_TURNS");
 
         assert_eq!(
             result, 10,
@@ -3144,9 +3143,8 @@ You review code."#;
 
         let session = crate::session::Session::default(); // no recipe
 
-        std::env::set_var("GOOSE_SUBAGENT_MAX_TURNS", "7");
+        let _env = env_lock::lock_env([("GOOSE_SUBAGENT_MAX_TURNS", Some("7"))]);
         let result = client.resolve_max_turns(&session);
-        std::env::remove_var("GOOSE_SUBAGENT_MAX_TURNS");
 
         assert_eq!(
             result, 7,
