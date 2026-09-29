@@ -1372,6 +1372,10 @@ impl SummonClient {
             return Err("Delegated tasks cannot spawn further delegations".to_string());
         }
 
+        if crate::agents::state_machine::enabled() {
+            return self.handle_foreground_delegate(params, &session).await;
+        }
+
         if params.r#async {
             let (content, task_id) = self.handle_async_delegate(session_id, params).await?;
             let mut meta = MetaObject::new();
@@ -1380,10 +1384,6 @@ impl SummonClient {
                 serde_json::Value::String(task_id),
             );
             return Ok(CallToolResult::success(content).with_meta(Some(meta)));
-        }
-
-        if crate::agents::state_machine::enabled() {
-            return self.handle_foreground_delegate(params, &session).await;
         }
 
         let working_dir = session.working_dir.clone();
@@ -2509,6 +2509,7 @@ mod tests {
             SummonClient::new(create_test_context_with_session_manager(manager.clone())).unwrap();
         let args = serde_json::json!({
             "instructions": "Review the change",
+            "async": true,
             "provider": "openai",
             "model": "test-model",
             "extensions": [],
