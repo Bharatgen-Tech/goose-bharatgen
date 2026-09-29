@@ -2,13 +2,16 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use futures::future::join_all;
 use futures::StreamExt;
+use rmcp::model::Role;
 use tokio_util::sync::CancellationToken;
 
-use crate::agents::state_machine::ops_recipe::RecipeOperation;
+use crate::agents::final_output_tool::FinalOutputTool;
+use crate::agents::state_machine::ops_maxturns::MAX_TURNS_MESSAGE;
 use crate::agents::state_machine::{
-    not_applicable, pending_tool_confirmations, trailing_error, yielded, Emitter, GooseEffect,
-    Operation, OperationResult,
+    applied, awaits_tool_responses, messages_since_kickoff, not_applicable, trailing_error,
+    yielded, Emitter, GooseEffect, Operation, OperationResult,
 };
 use crate::agents::subagent_handler::from_foreground_subagent_session;
 use crate::agents::SessionConfig;
@@ -17,8 +20,28 @@ use crate::conversation::Conversation;
 use crate::session::{Session, SessionManager, SessionType};
 
 const OPERATION_NAME: &str = "foreground_subagent";
-const OUTCOME_NOTE: &str = "outcome";
-const DELIVERY_NOTE: &str = "delivered_child_session_id";
+
+pub(super) fn foreground_child_ids_in_message(content: &[MessageContent]) -> Vec<String> {
+    content
+        .iter()
+        .filter_map(|content| {
+            let MessageContent::ToolResponse(response) = content else {
+                return None;
+            };
+            let result = response.tool_result.as_ref().ok()?;
+            let meta = result.meta.as_ref()?;
+            if result.is_error == Some(true)
+                || meta.0.get("foreground_subagent") != Some(&serde_json::Value::Bool(true))
+            {
+                return None;
+            }
+            meta.0
+                .get("subagent_session_id")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect()
+}
 
 pub struct ForegroundSubagentOperation {
     session_manager: Arc<SessionManager>,
@@ -37,70 +60,6 @@ impl ForegroundSubagentOperation {
             use_login_shell_path,
             cancel,
         }
-    }
-
-    fn find_child_id_from_delegate_response(conversation: &Conversation) -> Option<&str> {
-        for message in conversation.messages().iter().rev() {
-            if message
-                .metadata
-                .operation_note(OPERATION_NAME, DELIVERY_NOTE)
-                .is_some()
-            {
-                return None;
-            }
-            for content in &message.content {
-                let MessageContent::ToolResponse(response) = content else {
-                    continue;
-                };
-                let Ok(result) = &response.tool_result else {
-                    continue;
-                };
-                if result.is_error == Some(true)
-                    || result
-                        .meta
-                        .as_ref()
-                        .and_then(|meta| meta.0.get("foreground_subagent"))
-                        != Some(&serde_json::Value::Bool(true))
-                {
-                    continue;
-                }
-                return result
-                    .meta
-                    .as_ref()
-                    .and_then(|meta| meta.0.get("subagent_session_id"))
-                    .and_then(serde_json::Value::as_str);
-            }
-        }
-        None
-    }
-
-    fn child_has_outcome(session: &Session) -> bool {
-        session.conversation.as_ref().is_some_and(|conversation| {
-            RecipeOperation::successful_final_output(conversation.messages()).is_some()
-                || conversation.messages().iter().any(|message| {
-                    message
-                        .metadata
-                        .operation_note(OPERATION_NAME, OUTCOME_NOTE)
-                        .is_some()
-                })
-        })
-    }
-
-    async fn record_outcome(
-        &self,
-        child_id: &str,
-        status: &str,
-        error: Option<String>,
-    ) -> Result<()> {
-        let mut message = Message::user()
-            .with_text("Foreground subagent outcome")
-            .with_visibility(false, false);
-        message.metadata.set_operation_note(
-            OPERATION_NAME,
-            OUTCOME_NOTE,
-            serde_json::json!({ "status": status, "error": error }),
-        );
-        self.session_manager.add_message(child_id, &message).await
     }
 
     async fn advance_child(&self, child: &Session) -> Result<()> {
@@ -133,6 +92,71 @@ impl ForegroundSubagentOperation {
         }
         Ok(())
     }
+
+    async fn run_child(&self, parent_id: &str, child_id: &str) -> String {
+        let child = match self.session_manager.get_session(child_id, true).await {
+            Ok(child) => child,
+            Err(error) => return format!("Subagent {child_id} failed: {error}"),
+        };
+        if child.session_type != SessionType::SubAgent
+            || child.parent_session_id.as_deref() != Some(parent_id)
+        {
+            return format!("Subagent {child_id} failed: it does not belong to this session");
+        }
+        if let Some(output) = child
+            .conversation
+            .as_ref()
+            .and_then(|conversation| FinalOutputTool::successful_output(conversation.messages()))
+        {
+            return format!("Subagent {child_id} completed: {output}");
+        }
+
+        let run_result = self.advance_child(&child).await;
+        let child = match self.session_manager.get_session(child_id, true).await {
+            Ok(child) => child,
+            Err(error) => return format!("Subagent {child_id} failed: {error}"),
+        };
+        let messages = child.conversation.as_ref().map(Conversation::messages);
+        if let Some(output) =
+            messages.and_then(|messages| FinalOutputTool::successful_output(messages))
+        {
+            return format!("Subagent {child_id} completed: {output}");
+        }
+        if let Err(error) = run_result {
+            return format!("Subagent {child_id} failed: {error}");
+        }
+        if let Some(error) = child.conversation.as_ref().and_then(trailing_error) {
+            return format!("Subagent {child_id} failed: {error:?}");
+        }
+
+        let reason = messages
+            .and_then(|messages| {
+                if messages
+                    .last()
+                    .is_some_and(|message| message.as_concat_text() == MAX_TURNS_MESSAGE)
+                {
+                    let last_assistant_text = messages
+                        .iter()
+                        .rev()
+                        .filter(|message| message.role == Role::Assistant)
+                        .map(Message::as_concat_text)
+                        .find(|text| !text.is_empty() && text != MAX_TURNS_MESSAGE);
+                    Some(format!(
+                        "max turns reached{}",
+                        last_assistant_text
+                            .map(|text| format!("; last response: {text}"))
+                            .unwrap_or_default()
+                    ))
+                } else {
+                    messages
+                        .last()
+                        .map(Message::as_concat_text)
+                        .filter(|text| !text.is_empty())
+                }
+            })
+            .unwrap_or_else(|| "stopped without final output".to_string());
+        format!("Subagent {child_id} failed: {reason}")
+    }
 }
 
 #[async_trait]
@@ -150,108 +174,89 @@ impl Operation<Session, GooseEffect> for ForegroundSubagentOperation {
         if session.session_type == SessionType::SubAgent {
             return not_applicable();
         }
-        let Some(child_id) = Self::find_child_id_from_delegate_response(conversation) else {
-            return not_applicable();
-        };
-        if !pending_tool_confirmations(conversation).is_empty() {
+        if awaits_tool_responses(messages_since_kickoff(conversation)?) {
             return not_applicable();
         }
-        let child = self.session_manager.get_session(child_id, true).await?;
-        if child.session_type != SessionType::SubAgent
-            || child.parent_session_id.as_deref() != Some(session.id.as_str())
-        {
-            return Err(anyhow!(
-                "Session {child_id} is not a child of {}",
-                session.id
-            ));
+        let waiting = self
+            .session_manager
+            .pending_foreground_subagents(&session.id)
+            .await?;
+        if waiting.is_empty() {
+            return not_applicable();
         }
-        if Self::child_has_outcome(&child) {
-            return yielded();
-        }
-
-        let advance_result = self.advance_child(&child).await;
-        let child = self.session_manager.get_session(child_id, true).await?;
-        if Self::child_has_outcome(&child) {
-            return yielded();
-        }
+        let results = join_all(
+            waiting
+                .iter()
+                .map(|child_id| self.run_child(&session.id, child_id)),
+        )
+        .await;
         if self.cancel.is_cancelled() {
-            self.record_outcome(child_id, "cancelled", None).await?;
             return yielded();
         }
-        if let Err(error) = advance_result {
-            self.record_outcome(child_id, "failure", Some(error.to_string()))
-                .await?;
-            return yielded();
-        }
-
-        let conversation = child
-            .conversation
-            .as_ref()
-            .ok_or_else(|| anyhow!("Subagent {child_id} has no conversation"))?;
-        if let Some(error) = trailing_error(conversation) {
-            self.record_outcome(child_id, "failure", Some(format!("{error:?}")))
-                .await?;
-        } else {
-            self.record_outcome(child_id, "yielded", None).await?;
-        }
-        yielded()
+        let delivery = Message::user()
+            .with_text(results.join("\n\n"))
+            .with_visibility(false, true);
+        applied([GooseEffect::DeliverForegroundSubagents {
+            message: delivery,
+            child_ids: waiting,
+        }])
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use rmcp::model::{CallToolResult, ContentBlock, MetaObject};
+    use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, MetaObject};
 
     use super::*;
 
     #[test]
-    fn finds_new_child_after_previous_child_was_delivered() {
-        let response = |call_id: &str, child_id: &str| {
-            let mut meta = MetaObject::new();
-            meta.0.insert(
-                "foreground_subagent".to_string(),
-                serde_json::Value::Bool(true),
-            );
-            meta.0.insert(
-                "subagent_session_id".to_string(),
-                serde_json::Value::String(child_id.to_string()),
-            );
-            Message::user().with_tool_response(
-                call_id,
+    fn identifies_foreground_children_in_tool_responses() {
+        let mut meta = MetaObject::new();
+        meta.0.insert(
+            "foreground_subagent".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        meta.0.insert(
+            "subagent_session_id".to_string(),
+            serde_json::Value::String("child-1".to_string()),
+        );
+        let message = Message::user()
+            .with_tool_response(
+                "delegate-call",
                 Ok(
                     CallToolResult::success(vec![ContentBlock::text("scheduled")])
                         .with_meta(Some(meta)),
                 ),
             )
-        };
-        let mut messages = vec![response("delegate-call-1", "child-1")];
-        assert_eq!(
-            ForegroundSubagentOperation::find_child_id_from_delegate_response(
-                &Conversation::new_unvalidated(messages.clone())
-            ),
-            Some("child-1")
-        );
+            .with_tool_response(
+                "other-call",
+                Ok(CallToolResult::success(vec![ContentBlock::text("done")])),
+            );
 
-        let mut delivery = Message::user().with_text("child completed");
-        delivery.metadata.set_operation_note(
-            OPERATION_NAME,
-            DELIVERY_NOTE,
-            serde_json::Value::String("child-1".to_string()),
-        );
-        messages.push(delivery);
-        assert!(
-            ForegroundSubagentOperation::find_child_id_from_delegate_response(
-                &Conversation::new_unvalidated(messages.clone())
-            )
-            .is_none()
-        );
-
-        messages.push(response("delegate-call-2", "child-2"));
         assert_eq!(
-            ForegroundSubagentOperation::find_child_id_from_delegate_response(
-                &Conversation::new_unvalidated(messages)
-            ),
-            Some("child-2")
+            foreground_child_ids_in_message(&message.content),
+            vec!["child-1"]
         );
+    }
+
+    #[test]
+    fn waits_for_all_tool_responses_before_running_children() {
+        let requests = Message::assistant()
+            .with_tool_request("delegate-call", Ok(CallToolRequestParams::new("delegate")))
+            .with_tool_request("other-call", Ok(CallToolRequestParams::new("other")));
+        let response = Message::user().with_tool_response(
+            "delegate-call",
+            Ok(CallToolResult::success(vec![ContentBlock::text(
+                "scheduled",
+            )])),
+        );
+        let mut messages = vec![requests, response];
+        assert!(awaits_tool_responses(&messages));
+
+        messages.push(Message::user().with_tool_response(
+            "other-call",
+            Ok(CallToolResult::success(vec![ContentBlock::text("done")])),
+        ));
+        assert!(!awaits_tool_responses(&messages));
     }
 }

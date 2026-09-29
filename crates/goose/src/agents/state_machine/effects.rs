@@ -7,6 +7,10 @@ use goose_agent::operation::{ConversationEffect, MachineEffect};
 
 pub enum GooseEffect {
     Conversation(ConversationEffect),
+    DeliverForegroundSubagents {
+        message: Message,
+        child_ids: Vec<String>,
+    },
     CompactConversation {
         conversation: Conversation,
         usage: Option<ProviderUsage>,
