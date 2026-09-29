@@ -1428,7 +1428,7 @@ mod tests {
             request_headers: None,
         };
         let request = create_request(&model_config, "system", &[], &[], &ImageFormat::OpenAi)?;
-        assert_eq!(request["reasoning_effort"], "high");
+        assert_eq!(request["reasoning_effort"], "xhigh");
         assert!(request.get("thinking_effort").is_none());
         Ok(())
     }
