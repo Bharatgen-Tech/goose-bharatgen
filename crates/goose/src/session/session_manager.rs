@@ -1,8 +1,6 @@
 use crate::config::paths::Paths;
 use crate::config::GooseMode;
-use crate::conversation::message::{
-    Message, MessageContent, MessageMetadata, MessageUsage, TokenState,
-};
+use crate::conversation::message::{Message, MessageMetadata, MessageUsage, TokenState};
 use crate::conversation::Conversation;
 use crate::providers::base::CostSource;
 use crate::providers::base::Provider;
@@ -2056,7 +2054,7 @@ impl SessionStorage {
         let query = format!(
             "SELECT s.id FROM sessions s WHERE s.parent_session_id = ? AND s.session_type = ? AND {PENDING_FOREGROUND_CHILD} ORDER BY s.created_at, s.id"
         );
-        Ok(sqlx::query_scalar(&query)
+        Ok(sqlx::query_scalar(AssertSqlSafe(query))
             .bind(parent_id)
             .bind(SessionType::SubAgent.to_string())
             .fetch_all(pool)
@@ -2075,7 +2073,7 @@ impl SessionStorage {
             "SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.id = ? AND s.parent_session_id = ? AND s.session_type = ? AND {PENDING_FOREGROUND_CHILD})"
         );
         for child_id in child_ids {
-            let eligible: bool = sqlx::query_scalar(&eligibility_query)
+            let eligible: bool = sqlx::query_scalar(AssertSqlSafe(eligibility_query.as_str()))
                 .bind(child_id)
                 .bind(parent_id)
                 .bind(SessionType::SubAgent.to_string())
