@@ -605,21 +605,6 @@ fn add_message_items(input_items: &mut Vec<Value>, messages: &[Message], support
     }
 }
 
-fn is_gpt_5_6_model(model_name: &str) -> bool {
-    let normalized = model_name.to_ascii_lowercase();
-    ["gpt-5.6", "gpt-5-6"].iter().any(|needle| {
-        normalized.match_indices(needle).any(|(start, matched)| {
-            let before = start
-                .checked_sub(1)
-                .and_then(|index| normalized.as_bytes().get(index));
-            let after = normalized.as_bytes().get(start + matched.len());
-
-            before.is_none_or(|byte| matches!(byte, b'-' | b'/'))
-                && after.is_none_or(|byte| matches!(byte, b'-' | b'/'))
-        })
-    })
-}
-
 pub fn create_responses_request(
     model_config: &ModelConfig,
     system: &str,
@@ -705,11 +690,6 @@ pub fn create_responses_request_for_model(
             }
         })
         .transpose()?;
-    if reasoning_mode.is_some() && !is_gpt_5_6_model(&model_name) {
-        return Err(anyhow!(
-            "reasoning_mode is only supported for GPT-5.6 models"
-        ));
-    }
     let mut payload = json!({
         "model": wire_model_name,
         "input": input_items,
@@ -2085,18 +2065,28 @@ mod tests {
     }
 
     #[test]
-    fn test_responses_request_rejects_reasoning_mode_for_non_gpt_5_6_model() {
-        for model_name in ["gpt-5.5", "gpt-5.60", "notgpt-5.6", "gpt-5.6ish"] {
+    fn test_responses_request_forwards_reasoning_mode_without_model_name_gate() {
+        for model_name in ["gpt-5.5", "gpt-6-astra", "future-reasoner"] {
             let model_config = ModelConfig::new(model_name).with_merged_request_params(
                 std::collections::HashMap::from([("reasoning_mode".to_string(), json!("pro"))]),
             );
 
-            let error = create_responses_request(&model_config, "You are helpful.", &[], &[])
-                .expect_err("reasoning mode should be gated to GPT-5.6 models");
+            let request = create_responses_request(&model_config, "You are helpful.", &[], &[])
+                .expect("the API decides which models support reasoning.mode");
+            assert_eq!(request["reasoning"]["mode"], "pro", "{model_name}");
+            assert!(request["reasoning"].get("effort").is_none());
+        }
+    }
 
-            assert!(error
-                .to_string()
-                .contains("reasoning_mode is only supported for GPT-5.6 models"));
+    #[test]
+    fn test_responses_request_rejects_invalid_reasoning_mode_value() {
+        for value in ["fast", "", "pro "] {
+            let model_config = ModelConfig::new("gpt-6-astra").with_merged_request_params(
+                std::collections::HashMap::from([("reasoning_mode".to_string(), json!(value))]),
+            );
+            let error = create_responses_request(&model_config, "You are helpful.", &[], &[])
+                .expect_err("only standard or pro are valid reasoning modes");
+            assert!(error.to_string().contains("Invalid reasoning_mode"));
         }
     }
 
