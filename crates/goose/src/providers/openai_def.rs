@@ -89,10 +89,16 @@ pub async fn from_env(
     } else {
         config.get_param("OPENAI_BASE_PATH").ok()
     };
-    let explicit_base_path = configured_base_path.is_some();
-    let base_path = configured_base_path.unwrap_or_else(default_bp);
-
+    // Older setup flows persisted the default chat path even when the user did
+    // not choose an endpoint. Treat that stored default as implicit for direct
+    // OpenAI, but keep environment overrides and custom-host paths explicit.
     let is_openai = is_direct_openai_host(&parsed.host);
+    let explicit_base_path = is_explicit_base_path(
+        is_openai,
+        configured_base_path.as_deref(),
+        std::env::var("OPENAI_BASE_PATH").is_ok(),
+    );
+    let base_path = configured_base_path.unwrap_or_else(default_bp);
     let secrets = config
         .get_secrets("OPENAI_API_KEY", &["OPENAI_CUSTOM_HEADERS"])
         .unwrap_or_default();
@@ -295,6 +301,12 @@ fn resolve_base_url(config: &crate::config::Config) -> Result<ParsedBaseUrl> {
     })
 }
 
+fn is_explicit_base_path(is_openai: bool, path: Option<&str>, from_env: bool) -> bool {
+    path.is_some_and(|path| {
+        from_env || !is_openai || path.trim_matches('/') != OPEN_AI_DEFAULT_BASE_PATH
+    })
+}
+
 /// Whether `host` points at OpenAI directly.
 ///
 /// Compares the hostname exactly to avoid false positives (e.g.
@@ -311,6 +323,27 @@ fn is_direct_openai_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persisted_openai_default_does_not_force_chat_completions() {
+        assert!(!is_explicit_base_path(
+            true,
+            Some("v1/chat/completions"),
+            false
+        ));
+        assert!(!is_explicit_base_path(true, None, false));
+        assert!(is_explicit_base_path(
+            true,
+            Some("v1/chat/completions"),
+            true
+        ));
+        assert!(is_explicit_base_path(true, Some("v1/responses"), false));
+        assert!(is_explicit_base_path(
+            false,
+            Some("v1/chat/completions"),
+            false
+        ));
+    }
 
     #[test]
     fn parse_base_url_strips_v1_from_standard_openai_url() {
