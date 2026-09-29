@@ -206,8 +206,11 @@ impl Operation<Session, GooseEffect> for ForegroundSubagentOperation {
 #[cfg(test)]
 mod tests {
     use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, MetaObject};
+    use tempfile::TempDir;
 
     use super::*;
+    use crate::agents::final_output_tool::{FINAL_OUTPUT_SUCCESS_MESSAGE, FINAL_OUTPUT_TOOL_NAME};
+    use crate::config::GooseMode;
 
     #[test]
     fn identifies_foreground_children_in_tool_responses() {
@@ -258,5 +261,64 @@ mod tests {
             Ok(CallToolResult::success(vec![ContentBlock::text("done")])),
         ));
         assert!(!awaits_tool_responses(&messages));
+    }
+
+    #[tokio::test]
+    async fn completed_child_uses_saved_final_output_without_running_again() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let parent = manager
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "parent".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await?;
+        let child = manager
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "child".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await?;
+        manager
+            .update(&child.id)
+            .parent_session_id(Some(parent.id.clone()))
+            .apply()
+            .await?;
+        let arguments = serde_json::json!({"result": "done"})
+            .as_object()
+            .unwrap()
+            .clone();
+        manager
+            .add_message(
+                &child.id,
+                &Message::assistant().with_tool_request(
+                    "final-output-call",
+                    Ok(CallToolRequestParams::new(FINAL_OUTPUT_TOOL_NAME)
+                        .with_arguments(arguments)),
+                ),
+            )
+            .await?;
+        manager
+            .add_message(
+                &child.id,
+                &Message::user().with_tool_response(
+                    "final-output-call",
+                    Ok(CallToolResult::success(vec![ContentBlock::text(
+                        FINAL_OUTPUT_SUCCESS_MESSAGE,
+                    )])),
+                ),
+            )
+            .await?;
+
+        let operation = ForegroundSubagentOperation::new(manager, false, CancellationToken::new());
+        assert_eq!(
+            operation.run_child(&parent.id, &child.id).await,
+            format!("Subagent {} completed: {{\"result\":\"done\"}}", child.id)
+        );
+        Ok(())
     }
 }

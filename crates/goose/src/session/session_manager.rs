@@ -963,15 +963,6 @@ async fn insert_usage_ledger_row(
     Ok(())
 }
 
-fn foreground_subagent_metadata(message_id: &str) -> String {
-    serde_json::json!({
-        "execution_mode": "foreground",
-        "parent_delegate_message_id": message_id,
-        "result_delivered_to_parent": false,
-    })
-    .to_string()
-}
-
 const PENDING_FOREGROUND_CHILD: &str =
     "json_extract(s.parent_delegation, '$.execution_mode') = 'foreground' \
     AND json_extract(s.parent_delegation, '$.result_delivered_to_parent') = 0 \
@@ -2035,7 +2026,14 @@ impl SessionStorage {
             let changed = sqlx::query(
                 "UPDATE sessions SET parent_delegation = ? WHERE id = ? AND parent_session_id = ? AND session_type = ?",
             )
-            .bind(foreground_subagent_metadata(&message_id))
+            .bind(
+                serde_json::json!({
+                    "execution_mode": "foreground",
+                    "parent_delegate_message_id": message_id,
+                    "result_delivered_to_parent": false,
+                })
+                .to_string(),
+            )
             .bind(child_id)
             .bind(parent_id)
             .bind(SessionType::SubAgent.to_string())
@@ -3039,6 +3037,26 @@ mod tests {
             manager.pending_foreground_subagents(&parent.id).await?,
             vec![child.id.clone()]
         );
+        let copied_parent = manager
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "copied parent".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await?;
+        let copied_conversation = manager
+            .get_session(&parent.id, true)
+            .await?
+            .conversation
+            .unwrap();
+        manager
+            .replace_conversation(&copied_parent.id, &copied_conversation)
+            .await?;
+        assert!(manager
+            .pending_foreground_subagents(&copied_parent.id)
+            .await?
+            .is_empty());
         let reloaded = SessionManager::new(temp_dir.path().to_path_buf());
         let conversation = manager
             .get_session(&parent.id, true)
