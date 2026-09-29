@@ -33,7 +33,7 @@ use crate::oauth::GooseCredentialStore;
 use crate::session::{EnabledExtensionsState, ExtensionState, Session};
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, ErrorData, GetPromptResult,
-    ListResourcesResult, ListToolsResult, MetaObject, Prompt, Resource, ServerInfo, Tool,
+    ListResourcesResult, ListToolsResult, MetaObject, Prompt, Resource, ServerConfig, Tool,
 };
 use serde_json::Value;
 
@@ -142,7 +142,7 @@ pub(super) struct Extension {
     /// memory — never serialized to disk.
     resolved_config: ExtensionConfig,
     pub(super) client: McpClientBox,
-    server_info: Option<ServerInfo>,
+    server_info: Option<ServerConfig>,
     reconnect_on_working_dir_change: bool,
     /// Bumped by the client on tools/list_changed; a cached list is only valid
     /// for the version it was fetched under.
@@ -916,7 +916,7 @@ impl ExtensionManager {
         config: ExtensionConfig,
         working_dir: Option<PathBuf>,
         client: McpClientBox,
-        info: Option<ServerInfo>,
+        info: Option<ServerConfig>,
     ) {
         let _guard = self.directory_lock.read().await;
         let working_dir =
@@ -929,7 +929,7 @@ impl ExtensionManager {
         config: ExtensionConfig,
         session_id: &str,
         client: McpClientBox,
-        info: Option<ServerInfo>,
+        info: Option<ServerConfig>,
     ) -> ExtensionResult<()> {
         let _guard = self.directory_lock.read().await;
         let working_dir = self
@@ -948,7 +948,7 @@ impl ExtensionManager {
         config: ExtensionConfig,
         working_dir: PathBuf,
         client: McpClientBox,
-        info: Option<ServerInfo>,
+        info: Option<ServerConfig>,
     ) {
         let key = config.key();
         let mut extensions = self.extensions.lock().await;

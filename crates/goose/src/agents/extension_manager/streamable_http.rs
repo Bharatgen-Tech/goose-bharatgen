@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use axum::http::{HeaderMap, HeaderName};
 use rmcp::model::{
-    CallToolResult, ErrorCode, ErrorData, GetPromptResult, ProtocolVersion, ServerInfo,
+    CallToolResult, ErrorCode, ErrorData, GetPromptResult, ProtocolVersion, ServerConfig,
     ServerNotification,
 };
 use rmcp::service::{ClientInitializeError, ServiceError};
@@ -297,7 +297,7 @@ pub(super) struct ConnectParams {
 /// (requesting the union of scopes), reconnect, and retry the request once.
 struct OAuthStepUpClient {
     inner: tokio::sync::RwLock<McpClient>,
-    server_info: Option<ServerInfo>,
+    server_info: Option<ServerConfig>,
     params: tokio::sync::RwLock<ConnectParams>,
     step_up_lock: tokio::sync::Mutex<()>,
     notification_subscribers: Arc<Mutex<Vec<mpsc::Sender<ServerNotification>>>>,
@@ -455,7 +455,7 @@ impl McpClientTrait for OAuthStepUpClient {
         .await
     }
 
-    fn get_info(&self) -> Option<&ServerInfo> {
+    fn get_info(&self) -> Option<&ServerConfig> {
         self.server_info.as_ref()
     }
 

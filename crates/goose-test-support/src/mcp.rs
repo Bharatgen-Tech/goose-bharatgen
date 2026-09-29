@@ -9,7 +9,7 @@ use rmcp::model::{
     ElicitationSchema, Implementation, InitializeResult, MetaObject, PrimitiveSchemaDefinition,
     ProgressNotificationParam, ProgressToken, ProtocolVersion, ReadResourceRequestParams,
     ReadResourceResponse, ReadResourceResult, RequestMetaObject, ResourceContents, Role,
-    ServerCapabilities, ServerInfo, StringSchema, TextContent,
+    ServerCapabilities, ServerConfig, StringSchema, TextContent,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::{
@@ -272,7 +272,7 @@ impl ServerHandler for McpFixtureServer {
         ))
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         InitializeResult::new(
             ServerCapabilities::builder()
                 .enable_tools()
