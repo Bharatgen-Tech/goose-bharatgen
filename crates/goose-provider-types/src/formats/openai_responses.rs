@@ -675,6 +675,9 @@ pub fn create_responses_request_for_model(
     } else {
         None
     };
+    let reasoning_effort = model_config
+        .request_param::<String>("reasoning_effort")
+        .or(reasoning_effort);
 
     let store = model_config.request_param::<bool>("store").unwrap_or(false);
     let reasoning_mode = model_config
