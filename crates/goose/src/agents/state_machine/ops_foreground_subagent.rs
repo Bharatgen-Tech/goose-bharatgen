@@ -15,11 +15,35 @@ use crate::agents::state_machine::{
 };
 use crate::agents::subagent_handler::from_foreground_subagent_session;
 use crate::agents::SessionConfig;
-use crate::conversation::message::{Message, MessageContent};
+use crate::conversation::message::{Message, MessageContent, SystemNotificationType};
 use crate::conversation::Conversation;
 use crate::session::{Session, SessionManager, SessionType};
+use crate::utils::safe_truncate;
 
 const OPERATION_NAME: &str = "foreground_subagent";
+const TASK_SNIPPET_CHARS: usize = 160;
+
+enum ChildOutcome {
+    Completed(String),
+    Failed(String),
+}
+
+fn inline_notice(text: String) -> Message {
+    Message::assistant().with_system_notification(SystemNotificationType::InlineMessage, text)
+}
+
+fn start_notice(child: &Session) -> String {
+    let snippet = child
+        .recipe
+        .as_ref()
+        .and_then(|recipe| recipe.prompt.as_deref())
+        .map(|prompt| {
+            let prompt = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+            format!(" ({})", safe_truncate(&prompt, TASK_SNIPPET_CHARS))
+        })
+        .unwrap_or_default();
+    format!("Running subagent {}{snippet}", child.id)
+}
 
 pub(super) fn foreground_child_ids_in_message(content: &[MessageContent]) -> Vec<String> {
     content
@@ -93,40 +117,59 @@ impl ForegroundSubagentOperation {
         Ok(())
     }
 
-    async fn run_child(&self, parent_id: &str, child_id: &str) -> String {
+    async fn run_child(&self, parent_id: &str, child_id: &str, emit: &Emitter) -> String {
+        let outcome = self.child_outcome(parent_id, child_id, emit).await;
+        if !self.cancel.is_cancelled() {
+            let notice = match &outcome {
+                ChildOutcome::Completed(_) => format!("Subagent {child_id} completed"),
+                ChildOutcome::Failed(reason) => format!(
+                    "Subagent {child_id} failed: {}",
+                    reason.lines().next().unwrap_or_default()
+                ),
+            };
+            emit.message(inline_notice(notice)).await;
+        }
+        match outcome {
+            ChildOutcome::Completed(output) => format!("Subagent {child_id} completed: {output}"),
+            ChildOutcome::Failed(reason) => format!("Subagent {child_id} failed: {reason}"),
+        }
+    }
+
+    async fn child_outcome(&self, parent_id: &str, child_id: &str, emit: &Emitter) -> ChildOutcome {
         let child = match self.session_manager.get_session(child_id, true).await {
             Ok(child) => child,
-            Err(error) => return format!("Subagent {child_id} failed: {error}"),
+            Err(error) => return ChildOutcome::Failed(error.to_string()),
         };
         if child.session_type != SessionType::SubAgent
             || child.parent_session_id.as_deref() != Some(parent_id)
         {
-            return format!("Subagent {child_id} failed: it does not belong to this session");
+            return ChildOutcome::Failed("it does not belong to this session".to_string());
         }
         if let Some(output) = child
             .conversation
             .as_ref()
             .and_then(|conversation| FinalOutputTool::successful_output(conversation.messages()))
         {
-            return format!("Subagent {child_id} completed: {output}");
+            return ChildOutcome::Completed(output);
         }
 
+        emit.message(inline_notice(start_notice(&child))).await;
         let run_result = self.advance_child(&child).await;
         let child = match self.session_manager.get_session(child_id, true).await {
             Ok(child) => child,
-            Err(error) => return format!("Subagent {child_id} failed: {error}"),
+            Err(error) => return ChildOutcome::Failed(error.to_string()),
         };
         let messages = child.conversation.as_ref().map(Conversation::messages);
         if let Some(output) =
             messages.and_then(|messages| FinalOutputTool::successful_output(messages))
         {
-            return format!("Subagent {child_id} completed: {output}");
+            return ChildOutcome::Completed(output);
         }
         if let Err(error) = run_result {
-            return format!("Subagent {child_id} failed: {error}");
+            return ChildOutcome::Failed(error.to_string());
         }
         if let Some(error) = child.conversation.as_ref().and_then(trailing_error) {
-            return format!("Subagent {child_id} failed: {error:?}");
+            return ChildOutcome::Failed(format!("{error:?}"));
         }
 
         let reason = messages
@@ -155,7 +198,7 @@ impl ForegroundSubagentOperation {
                 }
             })
             .unwrap_or_else(|| "stopped without final output".to_string());
-        format!("Subagent {child_id} failed: {reason}")
+        ChildOutcome::Failed(reason)
     }
 }
 
@@ -169,7 +212,7 @@ impl Operation<Session, GooseEffect> for ForegroundSubagentOperation {
         &self,
         session: &Session,
         conversation: &Conversation,
-        _emit: &Emitter,
+        emit: &Emitter,
     ) -> Result<OperationResult<GooseEffect>> {
         if session.session_type == SessionType::SubAgent {
             return not_applicable();
@@ -187,7 +230,7 @@ impl Operation<Session, GooseEffect> for ForegroundSubagentOperation {
         let results = join_all(
             waiting
                 .iter()
-                .map(|child_id| self.run_child(&session.id, child_id)),
+                .map(|child_id| self.run_child(&session.id, child_id, emit)),
         )
         .await;
         if self.cancel.is_cancelled() {
@@ -205,12 +248,82 @@ impl Operation<Session, GooseEffect> for ForegroundSubagentOperation {
 
 #[cfg(test)]
 mod tests {
+    use goose_agent::events::AgentEvent;
     use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, MetaObject};
     use tempfile::TempDir;
+    use tokio::sync::mpsc;
 
     use super::*;
     use crate::agents::final_output_tool::{FINAL_OUTPUT_SUCCESS_MESSAGE, FINAL_OUTPUT_TOOL_NAME};
     use crate::config::GooseMode;
+
+    struct Fixture {
+        _temp_dir: TempDir,
+        manager: Arc<SessionManager>,
+        parent_id: String,
+        child_id: String,
+    }
+
+    async fn fixture() -> Result<Fixture> {
+        let temp_dir = TempDir::new()?;
+        let manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let parent = manager
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "parent".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await?;
+        let child = manager
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "child".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await?;
+        manager
+            .update(&child.id)
+            .parent_session_id(Some(parent.id.clone()))
+            .apply()
+            .await?;
+        Ok(Fixture {
+            _temp_dir: temp_dir,
+            manager,
+            parent_id: parent.id,
+            child_id: child.id,
+        })
+    }
+
+    async fn run_child_with_notices(
+        fixture: &Fixture,
+        cancel: CancellationToken,
+    ) -> (String, Vec<String>) {
+        let (tx, mut rx) = mpsc::channel(16);
+        let emit = Emitter::new(tx, cancel.clone());
+        let operation = ForegroundSubagentOperation::new(fixture.manager.clone(), false, cancel);
+        let delivery = operation
+            .run_child(&fixture.parent_id, &fixture.child_id, &emit)
+            .await;
+        drop(emit);
+        let mut notices = Vec::new();
+        while let Some(event) = rx.recv().await {
+            let AgentEvent::Message(message) = event else {
+                continue;
+            };
+            for content in message.content {
+                if let MessageContent::SystemNotification(notification) = content {
+                    assert_eq!(
+                        notification.notification_type,
+                        SystemNotificationType::InlineMessage
+                    );
+                    notices.push(notification.msg);
+                }
+            }
+        }
+        (delivery, notices)
+    }
 
     #[test]
     fn identifies_foreground_children_in_tool_responses() {
@@ -265,36 +378,15 @@ mod tests {
 
     #[tokio::test]
     async fn completed_child_uses_saved_final_output_without_running_again() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
-        let parent = manager
-            .create_session(
-                temp_dir.path().to_path_buf(),
-                "parent".to_string(),
-                SessionType::User,
-                GooseMode::Auto,
-            )
-            .await?;
-        let child = manager
-            .create_session(
-                temp_dir.path().to_path_buf(),
-                "child".to_string(),
-                SessionType::SubAgent,
-                GooseMode::Auto,
-            )
-            .await?;
-        manager
-            .update(&child.id)
-            .parent_session_id(Some(parent.id.clone()))
-            .apply()
-            .await?;
+        let fixture = fixture().await?;
         let arguments = serde_json::json!({"result": "done"})
             .as_object()
             .unwrap()
             .clone();
-        manager
+        fixture
+            .manager
             .add_message(
-                &child.id,
+                &fixture.child_id,
                 &Message::assistant().with_tool_request(
                     "final-output-call",
                     Ok(CallToolRequestParams::new(FINAL_OUTPUT_TOOL_NAME)
@@ -302,9 +394,10 @@ mod tests {
                 ),
             )
             .await?;
-        manager
+        fixture
+            .manager
             .add_message(
-                &child.id,
+                &fixture.child_id,
                 &Message::user().with_tool_response(
                     "final-output-call",
                     Ok(CallToolResult::success(vec![ContentBlock::text(
@@ -314,11 +407,58 @@ mod tests {
             )
             .await?;
 
-        let operation = ForegroundSubagentOperation::new(manager, false, CancellationToken::new());
+        let (delivery, notices) = run_child_with_notices(&fixture, CancellationToken::new()).await;
         assert_eq!(
-            operation.run_child(&parent.id, &child.id).await,
-            format!("Subagent {} completed: {{\"result\":\"done\"}}", child.id)
+            delivery,
+            format!(
+                "Subagent {} completed: {{\"result\":\"done\"}}",
+                fixture.child_id
+            )
+        );
+        assert_eq!(
+            notices,
+            vec![format!("Subagent {} completed", fixture.child_id)]
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_child_emits_start_and_failure_notices() -> Result<()> {
+        let fixture = fixture().await?;
+
+        let (delivery, notices) = run_child_with_notices(&fixture, CancellationToken::new()).await;
+        let reason = format!("Subagent {} has no saved recipe", fixture.child_id);
+        assert_eq!(
+            delivery,
+            format!("Subagent {} failed: {reason}", fixture.child_id)
+        );
+        assert_eq!(
+            notices,
+            vec![
+                format!("Running subagent {}", fixture.child_id),
+                format!("Subagent {} failed: {reason}", fixture.child_id),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn start_notice_includes_a_single_line_task_snippet() {
+        let recipe = crate::recipe::Recipe::builder()
+            .title("Delegated task")
+            .description("Delegated task")
+            .prompt("Review the auth\nchanges in the login flow and report back")
+            .build()
+            .unwrap();
+        let child = Session {
+            id: "child".to_string(),
+            recipe: Some(recipe),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            start_notice(&child),
+            "Running subagent child (Review the auth changes in the login flow and report back)"
+        );
     }
 }
