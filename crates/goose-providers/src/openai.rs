@@ -1262,7 +1262,13 @@ mod tests {
     fn native_openai_prefers_responses_without_changing_gateway_routing() {
         let mut provider = make_provider("openai");
         provider.native_openai = true;
-        for model in ["gpt-4o", "gpt-5-chat-latest", "gpt-6-astra", "future-model"] {
+        for model in [
+            "gpt-4",
+            "gpt-4o",
+            "gpt-5-chat-latest",
+            "gpt-6-astra",
+            "future-model",
+        ] {
             assert!(
                 provider.should_use_responses_api_for_provider(model),
                 "{model}"
