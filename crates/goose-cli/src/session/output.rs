@@ -358,7 +358,6 @@ pub fn render_message(message: &Message, debug: bool) {
                     SystemNotificationType::InlineMessage => {
                         hide_thinking();
                         println!("\n{} {}", style("·").dim(), &notification.msg);
-                        show_thinking();
                     }
                     SystemNotificationType::CreditsExhausted => {
                         render_credits_exhausted_notification(notification);
@@ -457,7 +456,6 @@ pub fn render_message_streaming(
                         flush_markdown_buffer(buffer, theme);
                         hide_thinking();
                         println!("\n{} {}", style("·").dim(), &notification.msg);
-                        show_thinking();
                     }
                     SystemNotificationType::CreditsExhausted => {
                         flush_markdown_buffer(buffer, theme);
