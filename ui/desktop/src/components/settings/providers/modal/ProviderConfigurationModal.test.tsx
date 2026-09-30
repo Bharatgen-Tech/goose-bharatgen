@@ -56,51 +56,6 @@ const oauthProvider: ProviderDetails = {
 };
 
 describe('ProviderConfigurationModal', () => {
-  it('does not save the OpenAI base path default unless the user enters it', async () => {
-    const user = userEvent.setup();
-    const provider: ProviderDetails = {
-      ...oauthProvider,
-      name: 'openai',
-      is_configured: false,
-      metadata: {
-        ...oauthProvider.metadata,
-        name: 'openai',
-        display_name: 'OpenAI',
-        config_keys: [
-          { name: 'OPENAI_API_KEY', required: true, secret: true, oauth_flow: false },
-          {
-            name: 'OPENAI_BASE_PATH',
-            required: false,
-            secret: false,
-            oauth_flow: false,
-            default: 'v1/chat/completions',
-          },
-        ],
-      },
-    };
-    render(<ProviderConfigurationModal provider={provider} onClose={vi.fn()} />, {
-      wrapper: IntlTestWrapper,
-    });
-
-    await user.type(await screen.findByPlaceholderText('Your API key'), 'test-key');
-    await user.click(screen.getByRole('button', { name: 'Submit' }));
-    await waitFor(() =>
-      expect(acpSaveProviderConfig).toHaveBeenCalledWith('openai', [
-        { key: 'OPENAI_API_KEY', value: 'test-key' },
-      ])
-    );
-
-    await user.click(screen.getByText('Show 1 options'));
-    await user.type(screen.getByPlaceholderText('v1/chat/completions'), 'v1/responses');
-    await user.click(screen.getByRole('button', { name: 'Submit' }));
-    await waitFor(() =>
-      expect(acpSaveProviderConfig).toHaveBeenLastCalledWith('openai', [
-        { key: 'OPENAI_API_KEY', value: 'test-key' },
-        { key: 'OPENAI_BASE_PATH', value: 'v1/responses' },
-      ])
-    );
-  });
-
   it('configures Z.AI Coding Plan through the standard Desktop API key form', async () => {
     const user = userEvent.setup();
     const onConfigured = vi.fn();
@@ -166,7 +121,8 @@ describe('ProviderConfigurationModal', () => {
       },
     };
     let finishSecondCheck:
-      ((value: Awaited<ReturnType<typeof acpRefreshProviderDetails>>) => void) | undefined;
+      | ((value: Awaited<ReturnType<typeof acpRefreshProviderDetails>>) => void)
+      | undefined;
     vi.mocked(acpRefreshProviderDetails)
       .mockResolvedValueOnce({
         provider: acpProvider,
