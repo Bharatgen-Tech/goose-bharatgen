@@ -743,14 +743,35 @@ pub fn create_responses_request_for_model(
         }
     }
 
-    if let Some(max_tokens) = model_config.max_tokens {
-        payload
-            .as_object_mut()
-            .unwrap()
-            .insert("max_output_tokens".to_string(), json!(max_tokens));
+    let params = model_config.request_params.as_ref();
+    let chat_token_limit = ["max_completion_tokens", "max_tokens"]
+        .into_iter()
+        .filter_map(|key| {
+            params
+                .and_then(|params| params.get(key))
+                .map(|value| (key, value))
+        })
+        .map(|(key, value)| {
+            let limit = value
+                .as_i64()
+                .filter(|limit| *limit > 0 && *limit <= i32::MAX as i64)
+                .ok_or_else(|| anyhow!("{key} must be a positive integer"))?;
+            Ok(limit as i32)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    if chat_token_limit.len() == 2 && chat_token_limit[0] != chat_token_limit[1] {
+        return Err(anyhow!(
+            "max_completion_tokens and max_tokens must agree for Responses API"
+        ));
+    }
+    if let Some(max_tokens) = model_config
+        .max_tokens
+        .or_else(|| chat_token_limit.first().copied())
+    {
+        payload["max_output_tokens"] = json!(max_tokens);
     }
 
-    if let Some(params) = &model_config.request_params {
+    if let Some(params) = params {
         if let Some(response_format) = params.get("response_format") {
             let format = match response_format.get("type").and_then(Value::as_str) {
                 Some("json_object" | "text") => response_format.clone(),
