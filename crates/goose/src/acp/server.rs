@@ -370,6 +370,11 @@ fn agent_capabilities_meta() -> Option<Meta> {
     if cfg!(feature = "local-inference") {
         goose.insert("localInference".to_string(), serde_json::json!({}));
     }
+    // Tell the client it can rely on `_meta.ifc.hide` in permission responses.
+    goose.insert(
+        "ifc".to_string(),
+        serde_json::json!({ "hideDirective": true }),
+    );
 
     let mut meta = serde_json::Map::new();
     meta.insert("goose".to_string(), serde_json::Value::Object(goose));
@@ -1592,14 +1597,31 @@ impl GooseAcpAgent {
             option(PermissionOptionKind::RejectAlways),
         ];
 
+        // Name the tool explicitly. `toolCall.title` is humanized for display
+        // ("ifcdemo: publish"), so a client applying per-tool policy cannot
+        // recover the tool from it.
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "goose".to_string(),
+            serde_json::json!({ "toolName": request.tool_name }),
+        );
         let permission_request =
-            RequestPermissionRequest::new(session_id, tool_call_update, options);
+            RequestPermissionRequest::new(session_id, tool_call_update, options).meta(meta);
         let request_id = request.request_id;
 
         cx.send_request(permission_request)
             .on_receiving_result(move |result| async move {
                 let permission = match result {
-                    Ok(response) => outcome_to_confirmation(&response.outcome).permission,
+                    Ok(response) => {
+                        // The client owns IFC policy; if it asked us to withhold
+                        // this result from the model, note that before the tool runs.
+                        if let Some(hide_ref) =
+                            crate::ifc::parse_hide_directive(response.meta.as_ref())
+                        {
+                            crate::ifc::mark_pending(&target.session_id, &request_id, &hide_ref);
+                        }
+                        outcome_to_confirmation(&response.outcome).permission
+                    }
                     Err(e) => {
                         error!(error = ?e, "permission request failed");
                         Permission::Cancel

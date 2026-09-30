@@ -24,6 +24,7 @@ pub mod gateway;
 pub mod goose_apps;
 pub mod hints;
 pub mod hooks;
+pub mod ifc;
 pub mod instance_id;
 mod live_voice;
 pub mod logging;

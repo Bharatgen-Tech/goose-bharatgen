@@ -1071,6 +1071,11 @@ impl Agent {
         cancellation_token: Option<CancellationToken>,
         session: &Session,
     ) -> (String, Result<ToolCallResult, ErrorData>) {
+        // IFC: the model may hand back a reference to a value it never saw.
+        // Substitute the real text so the tool receives it.
+        let mut tool_call = tool_call;
+        crate::ifc::resolve_refs(&session.id, &mut tool_call.arguments);
+
         if gen_ai_telemetry::capture_message_content() {
             let input_summary = serde_json::json!({
                 "tool": tool_call.name,
@@ -3010,6 +3015,8 @@ impl Agent {
                                                                 }
                                                                 if let Some(response) = request_to_response_map.get_mut(&request_id) {
                                                                     let metadata = request_metadata.get(&request_id).and_then(|m| m.as_ref());
+                                                                    // IFC: withhold this result if the client asked us to.
+                                                                    let output = crate::ifc::apply_hide(&session_config.id, &request_id, output);
                                                                     response.add_tool_response_with_metadata(request_id, output, metadata);
                                                                 }
                                                             }
