@@ -748,6 +748,26 @@ pub fn create_responses_request_for_model(
     }
 
     if let Some(params) = &model_config.request_params {
+        if let Some(response_format) = params.get("response_format") {
+            let format = match response_format.get("type").and_then(Value::as_str) {
+                Some("json_object" | "text") => response_format.clone(),
+                Some("json_schema") => {
+                    let schema = response_format
+                        .get("json_schema")
+                        .and_then(Value::as_object)
+                        .ok_or_else(|| anyhow!("response_format.json_schema must be an object"))?;
+                    let mut format = schema.clone();
+                    format.insert("type".to_string(), json!("json_schema"));
+                    Value::Object(format)
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "Unsupported response_format for Responses API: {response_format}"
+                    ))
+                }
+            };
+            payload["text"] = json!({ "format": format });
+        }
         let object = payload.as_object_mut().unwrap();
         for (key, value) in params {
             if is_goose_internal_request_param(key) {
@@ -767,6 +787,7 @@ pub fn create_responses_request_for_model(
                     | "max_tokens"
                     | "max_completion_tokens"
                     | "response_format"
+                    | "text"
             ) {
                 continue;
             }

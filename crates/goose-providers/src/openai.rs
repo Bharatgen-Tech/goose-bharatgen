@@ -134,7 +134,6 @@ pub struct OpenAiProvider {
     skip_canonical_filtering: bool,
     preserve_thinking_context: bool,
     native_openai: bool,
-    explicit_base_path: bool,
     #[serde(skip)]
     n_ctx_cache: Arc<Mutex<HashMap<String, CachedContextLimit>>>,
 }
@@ -157,7 +156,6 @@ pub struct OpenAiProviderBuilder {
     skip_canonical_filtering: bool,
     preserve_thinking_context: bool,
     native_openai: bool,
-    explicit_base_path: bool,
 }
 
 impl OpenAiProviderBuilder {
@@ -175,7 +173,6 @@ impl OpenAiProviderBuilder {
             skip_canonical_filtering: false,
             preserve_thinking_context: false,
             native_openai: false,
-            explicit_base_path: false,
         }
     }
 
@@ -252,11 +249,6 @@ impl OpenAiProviderBuilder {
         self
     }
 
-    pub fn explicit_base_path(mut self, explicit_base_path: bool) -> Self {
-        self.explicit_base_path = explicit_base_path;
-        self
-    }
-
     pub fn build(self) -> OpenAiProvider {
         OpenAiProvider {
             api_client: self.api_client,
@@ -271,7 +263,6 @@ impl OpenAiProviderBuilder {
             skip_canonical_filtering: self.skip_canonical_filtering,
             preserve_thinking_context: self.preserve_thinking_context,
             native_openai: self.native_openai,
-            explicit_base_path: self.explicit_base_path,
             n_ctx_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -372,7 +363,6 @@ impl OpenAiProvider {
             skip_canonical_filtering: false,
             preserve_thinking_context: false,
             native_openai: false,
-            explicit_base_path: false,
             n_ctx_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -531,12 +521,8 @@ impl OpenAiProvider {
         }
 
         let base_path = Self::normalize_base_path(&self.base_path);
-        if self.native_openai && !self.explicit_base_path && base_path == OPEN_AI_DEFAULT_BASE_PATH
-        {
+        if self.native_openai && base_path == OPEN_AI_DEFAULT_BASE_PATH {
             return true;
-        }
-        if self.native_openai && self.explicit_base_path {
-            return Self::is_responses_path(&base_path);
         }
         Self::should_use_responses_api(model_name, &self.base_path)
     }
@@ -1039,7 +1025,6 @@ mod tests {
             skip_canonical_filtering: false,
             preserve_thinking_context: false,
             native_openai: false,
-            explicit_base_path: false,
             n_ctx_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -1286,12 +1271,10 @@ mod tests {
         provider.base_path = "chat/completions".to_string();
         assert!(!provider.should_use_responses_api_for_provider("gpt-4o"));
         provider.base_path = "v1/chat/completions".to_string();
-        provider.explicit_base_path = true;
-        assert!(!provider.should_use_responses_api_for_provider("gpt-5.6-terra"));
-        assert!(!provider.should_use_responses_api_for_provider("gpt-4o"));
+        assert!(provider.should_use_responses_api_for_provider("gpt-5.6-terra"));
+        assert!(provider.should_use_responses_api_for_provider("gpt-4o"));
         provider.base_path = "v1/responses".to_string();
         assert!(provider.should_use_responses_api_for_provider("gpt-4o"));
-        provider.explicit_base_path = false;
         provider.base_path = "v1/chat/completions".to_string();
         provider.native_openai = false;
         assert!(!provider.should_use_responses_api_for_provider("gpt-4o"));
@@ -1588,7 +1571,6 @@ mod tests {
             skip_canonical_filtering: false,
             preserve_thinking_context: false,
             native_openai: false,
-            explicit_base_path: false,
             n_ctx_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
