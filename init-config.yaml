@@ -1,0 +1,5 @@
+# BharatGen defaults, applied on first run if no config exists (see CUSTOM_DISTROS.md).
+# LITELLM_HOST and LITELLM_API_KEY are set per user (clients/install.sh in Bharatgen-Tech/mancha-code).
+GOOSE_PROVIDER: litellm
+GOOSE_MODEL: bharatgen-param
+GOOSE_DISABLE_TELEMETRY: true
