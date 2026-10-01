@@ -314,22 +314,54 @@ impl GithubCopilotProvider {
         has_images: bool,
         streaming: bool,
     ) -> Result<Response, ProviderError> {
-        let (endpoint, token) = self.get_api_info().await?;
-        let mut headers = self.get_github_headers();
-        if has_images {
-            headers.insert("Copilot-Vision-Request", "true".parse().unwrap());
-        }
-        let initiator = if is_user_initiated { "user" } else { "agent" };
-        headers.insert("X-Initiator", initiator.parse().unwrap());
-        let api_client = self.authenticated_api_client(endpoint, token, headers)?;
+        for attempt in 0..2 {
+            let (endpoint, token) = self.get_api_info().await?;
+            let mut headers = self.get_github_headers();
+            if has_images {
+                headers.insert("Copilot-Vision-Request", "true".parse().unwrap());
+            }
+            let initiator = if is_user_initiated { "user" } else { "agent" };
+            headers.insert("X-Initiator", initiator.parse().unwrap());
+            let api_client = self.authenticated_api_client(endpoint, token.clone(), headers)?;
 
-        api_client
-            .request(path)
-            .model_headers(model_config)?
-            .streaming(streaming)
-            .response_post(payload)
-            .await
-            .map_err(|e| e.into())
+            let response = api_client
+                .request(path)
+                .model_headers(model_config)?
+                .streaming(streaming)
+                .response_post(payload)
+                .await?;
+            if matches!(
+                response.status(),
+                reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+            ) {
+                self.invalidate_token(&token).await?;
+                if attempt == 0 {
+                    continue;
+                }
+            }
+            return Ok(response);
+        }
+        unreachable!()
+    }
+
+    async fn invalidate_token(&self, rejected_token: &str) -> Result<(), ProviderError> {
+        let guard = self.mu.lock().await;
+        if guard
+            .borrow()
+            .as_ref()
+            .is_some_and(|state| state.info.token != rejected_token)
+        {
+            return Ok(());
+        }
+        if let Some(state) = self.cache.load().await {
+            if state.info.token != rejected_token && state.expires_at > Utc::now() {
+                guard.replace(Some(state));
+                return Ok(());
+            }
+        }
+        self.cache.clear().await.map_err(ProviderError::from)?;
+        guard.replace(None);
+        Ok(())
     }
 
     async fn get_api_info(&self) -> Result<(String, String), ProviderError> {
@@ -345,9 +377,7 @@ impl GithubCopilotProvider {
         if let Some(state) = self.cache.load().await {
             if state.expires_at > Utc::now() {
                 validate_copilot_api_endpoint(&state.info.endpoints.api)?;
-                if guard.borrow().is_none() {
-                    guard.replace(Some(state.clone()));
-                }
+                guard.replace(Some(state.clone()));
                 return Ok((state.info.endpoints.api, state.info.token));
             }
         }
@@ -365,6 +395,7 @@ impl GithubCopilotProvider {
             tracing::trace!("attempt {} to refresh api info", attempt + 1);
             let info = match self.refresh_api_info(&github_token).await {
                 Ok(data) => data,
+                Err(err @ ProviderError::Authentication(_)) => return Err(err),
                 Err(err) => {
                     tracing::warn!("failed to refresh api info: {}", err);
                     last_error = Some(err);
@@ -950,6 +981,157 @@ mod tests {
             provider.fetch_supported_models().await.unwrap(),
             vec!["gpt-test".to_string()]
         );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn revoked_token_is_replaced_and_request_retried_once() {
+        use wiremock::matchers::header;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer revoked"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer replacement"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/copilot-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "token": "replacement",
+                "expires_at": 0,
+                "refresh_in": 600,
+                "endpoints": { "api": server.uri() }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let directory = tempfile::tempdir().unwrap();
+        let cache = DiskCache {
+            cache_path: directory.path().join("info.json"),
+        };
+        cache
+            .save(&CopilotState {
+                expires_at: Utc::now() + chrono::Duration::minutes(10),
+                info: CopilotTokenInfo {
+                    token: "revoked".to_string(),
+                    expires_at: 0,
+                    refresh_in: 600,
+                    endpoints: CopilotTokenEndpoints {
+                        api: server.uri(),
+                        _extra: HashMap::new(),
+                    },
+                    _extra: HashMap::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let provider = GithubCopilotProvider {
+            client: Client::new(),
+            cache,
+            mu: tokio::sync::Mutex::new(RefCell::new(None)),
+            urls: GithubCopilotUrls {
+                device_code_url: String::new(),
+                access_token_url: String::new(),
+                copilot_token_url: format!("{}/copilot-token", server.uri()),
+            },
+            client_id: DEFAULT_GITHUB_COPILOT_CLIENT_ID.to_string(),
+            name: GITHUB_COPILOT_PROVIDER_NAME.to_string(),
+            tls_config: None,
+        };
+
+        std::env::set_var("GITHUB_COPILOT_TOKEN", "github-token");
+        let result = provider
+            .post(
+                &ModelConfig::new("gpt-4.1"),
+                "chat/completions",
+                true,
+                &mut json!({}),
+                false,
+                false,
+            )
+            .await;
+        std::env::remove_var("GITHUB_COPILOT_TOKEN");
+
+        assert_eq!(result.unwrap().status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            provider.cache.load().await.unwrap().info.token,
+            "replacement"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn rejected_github_token_returns_authentication_without_reusing_cache() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/copilot-token"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let directory = tempfile::tempdir().unwrap();
+        let provider = GithubCopilotProvider {
+            client: Client::new(),
+            cache: DiskCache {
+                cache_path: directory.path().join("info.json"),
+            },
+            mu: tokio::sync::Mutex::new(RefCell::new(Some(CopilotState {
+                expires_at: Utc::now() + chrono::Duration::minutes(10),
+                info: CopilotTokenInfo {
+                    token: "revoked".to_string(),
+                    expires_at: 0,
+                    refresh_in: 600,
+                    endpoints: CopilotTokenEndpoints {
+                        api: server.uri(),
+                        _extra: HashMap::new(),
+                    },
+                    _extra: HashMap::new(),
+                },
+            }))),
+            urls: GithubCopilotUrls {
+                device_code_url: String::new(),
+                access_token_url: String::new(),
+                copilot_token_url: format!("{}/copilot-token", server.uri()),
+            },
+            client_id: DEFAULT_GITHUB_COPILOT_CLIENT_ID.to_string(),
+            name: GITHUB_COPILOT_PROVIDER_NAME.to_string(),
+            tls_config: None,
+        };
+        let cached_state = provider.mu.lock().await.borrow().as_ref().unwrap().clone();
+        provider.cache.save(&cached_state).await.unwrap();
+
+        std::env::set_var("GITHUB_COPILOT_TOKEN", "rejected-github-token");
+        let result = provider
+            .post(
+                &ModelConfig::new("gpt-5.4"),
+                "responses",
+                true,
+                &mut json!({}),
+                false,
+                true,
+            )
+            .await;
+        std::env::remove_var("GITHUB_COPILOT_TOKEN");
+
+        assert!(matches!(result, Err(ProviderError::Authentication(_))));
+        assert!(provider.mu.lock().await.borrow().is_none());
+        assert!(provider.cache.load().await.is_none());
     }
 
     #[tokio::test]
