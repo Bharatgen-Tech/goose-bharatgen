@@ -50,7 +50,7 @@ goose session                   # interactive session
 goose run --text "explain this repo"
 ```
 
-No provider setup needed: on first use, the `litellm` provider and `bharatgen-param` model are preconfigured — your key and gateway URL come from the installer. Telemetry is off (`GOOSE_TELEMETRY_OFF=1`).
+No provider setup needed: on first use, the `litellm` provider and `or-qwen-free` model are preconfigured (same models as OpenCode — `or-qwen-free`, `or-qwen-coder`, `or-glm`, `or-kimi`, `bharatgen-param`; switch with `GOOSE_MODEL=<name>`), your key and gateway URL come from the installer. Telemetry is off (`GOOSE_TELEMETRY_OFF=1`).
 
 ### OpenRouter
 
