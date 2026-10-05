@@ -28,6 +28,39 @@ goose works with 15+ providers — Anthropic, OpenAI, Google, Ollama, OpenRouter
 
 goose is part of the [Agentic AI Foundation (AAIF)](https://aaif.io/) at the Linux Foundation.
 
+---
+
+## Mancha (BharatGen)
+
+This is the BharatGen white-labelled distribution of goose (Apache-2.0; modified — see the commit history, not affiliated with or endorsed by the goose maintainers). It ships with the Manch LiteLLM gateway preconfigured (`litellm` provider, `bharatgen-param` model) and stores its config in `~/.config/mancha`.
+
+### Install (macOS / Linux)
+
+```bash
+clients/install.sh --url https://llm.<your-domain> --key <your-virtual-key>
+```
+
+from the `clients/` directory of [mancha-code](https://github.com/Bharatgen-Tech/mancha-code). It installs the CLI and OpenCode, backs up any existing config, and writes your settings to `~/.config/mancha/env`. Virtual keys are issued by admins (`scripts/provision.py key`).
+
+### Use
+
+```bash
+source ~/.config/mancha/env     # or add it to your shell profile
+goose session                   # interactive session
+goose run --text "explain this repo"
+```
+
+No provider setup needed: on first use, the `litellm` provider and `bharatgen-param` model are preconfigured — your key and gateway URL come from the installer. Telemetry is off (`GOOSE_TELEMETRY_OFF=1`).
+
+### Local build
+
+```bash
+cargo build --release -p goose-cli --bin goose
+# binary: target/release/goose
+```
+
+Build deps on Linux: `build-essential pkg-config libssl-dev libdbus-1-dev libxcb1-dev clang` (libclang is required by bindgen). Desktop app: see `ui/desktop/README.md`.
+
 # Get started
 
 **[Download the desktop app](https://goose-docs.ai/docs/getting-started/installation)** for macOS, Linux, and Windows.
