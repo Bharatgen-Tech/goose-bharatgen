@@ -20,11 +20,11 @@ impl Paths {
             // user config/data directories (e.g. ~/Library/Application Support/Block/goose/).
             // Changing this would orphan existing installations.
             let strategy = choose_app_strategy(AppStrategyArgs {
-                top_level_domain: "Block".to_string(),
-                author: "Block".to_string(),
-                app_name: "goose".to_string(),
+                top_level_domain: "BharatGen".to_string(),
+                author: "BharatGen".to_string(),
+                app_name: "mancha".to_string(),
             })
-            .expect("goose requires a home dir");
+            .expect("mancha requires a home dir");
 
             match dir_type {
                 DirType::Config => strategy.config_dir(),
