@@ -81,12 +81,20 @@ Build deps on Linux: `build-essential pkg-config libssl-dev libdbus-1-dev libxcb
 
 # Get started
 
-**[Download the desktop app](https://goose-docs.ai/docs/getting-started/installation)** for macOS, Linux, and Windows.
+**[Download the desktop app](https://github.com/Bharatgen-Tech/goose-bharatgen/releases)** for macOS, Linux, and Windows.
 
-Or install the CLI:
+Or install the CLI (preconfigured for the Manch gateway):
 
 ```bash
-curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | bash
+curl -fsSL https://github.com/Bharatgen-Tech/goose-bharatgen/releases/download/stable/download_cli.sh | bash
+```
+
+then point it at the gateway with your virtual key (`~/.config/mancha/env`):
+
+```bash
+export GOOSE_PROVIDER=litellm GOOSE_MODEL=bharatgen-param
+export LITELLM_HOST=https://llm.<your-domain> LITELLM_API_KEY=<your-key>
+export GOOSE_TELEMETRY_OFF=1
 ```
 
 # Quick links
