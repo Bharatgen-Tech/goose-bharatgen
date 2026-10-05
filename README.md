@@ -52,6 +52,24 @@ goose run --text "explain this repo"
 
 No provider setup needed: on first use, the `litellm` provider and `bharatgen-param` model are preconfigured — your key and gateway URL come from the installer. Telemetry is off (`GOOSE_TELEMETRY_OFF=1`).
 
+### OpenRouter
+
+Mancha talks to OpenRouter two ways:
+
+1. **Through Manch (default)** — the LiteLLM gateway already routes to OpenRouter. Just pick an `or-` model:
+   ```bash
+   GOOSE_MODEL=or-qwen-coder goose session
+   ```
+   Spend and quotas are tracked per person by the gateway.
+2. **Direct** — skip the gateway and call OpenRouter with your own key:
+   ```bash
+   GOOSE_PROVIDER=openrouter \
+   GOOSE_MODEL=anthropic/claude-sonnet-4 \
+   OPENROUTER_API_KEY=<key from openrouter.ai/keys> \
+   goose session
+   ```
+   Optional: `OPENROUTER_HOST` overrides the default `https://openrouter.ai/api/v1` endpoint. Note that direct use bypasses the gateway's per-user spend tracking.
+
 ### Local build
 
 ```bash
