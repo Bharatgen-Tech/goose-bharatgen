@@ -30,22 +30,22 @@ goose is part of the [Agentic AI Foundation (AAIF)](https://aaif.io/) at the Lin
 
 ---
 
-## Mancha (BharatGen)
+## bg-code (BharatGen)
 
-This is the BharatGen white-labelled distribution of goose (Apache-2.0; modified — see the commit history, not affiliated with or endorsed by the goose maintainers). It ships with the Manch LiteLLM gateway preconfigured (`litellm` provider, `bharatgen-param` model) and stores its config in `~/.config/mancha`.
+This is the BharatGen white-labelled distribution of goose (Apache-2.0; modified — see the commit history, not affiliated with or endorsed by the goose maintainers). It ships with the Manch LiteLLM gateway preconfigured (`litellm` provider, `bharatgen-param` model) and stores its config in `~/.config/bg-code`.
 
 ### Install (macOS / Linux)
 
 ```bash
-clients/install.sh --url https://llm.<your-domain> --key <your-virtual-key>
+clients/install.sh --url https://llm.<your-domain> --key <your-virtual-key> [--model <name>]
 ```
 
-from the `clients/` directory of [mancha-code](https://github.com/Bharatgen-Tech/mancha-code). It installs the CLI and OpenCode, backs up any existing config, and writes your settings to `~/.config/mancha/env`. Virtual keys are issued by admins (`scripts/provision.py key`).
+from the `clients/` directory of [mancha-code](https://github.com/Bharatgen-Tech/mancha-code). It installs the CLI and OpenCode, backs up any existing config, and writes your settings to `~/.config/bg-code/env`. Virtual keys are issued by admins (`scripts/provision.py key`).
 
 ### Use
 
 ```bash
-source ~/.config/mancha/env     # or add it to your shell profile
+source ~/.config/bg-code/env     # or add it to your shell profile
 goose session                   # interactive session
 goose run --text "explain this repo"
 ```
@@ -54,7 +54,7 @@ No provider setup needed: on first use, the `litellm` provider and `or-qwen-free
 
 ### OpenRouter
 
-Mancha talks to OpenRouter two ways:
+bg-code talks to OpenRouter two ways:
 
 1. **Through Manch (default)** — the LiteLLM gateway already routes to OpenRouter. Just pick an `or-` model:
    ```bash
@@ -89,7 +89,7 @@ Or install the CLI (preconfigured for the Manch gateway):
 curl -fsSL https://github.com/Bharatgen-Tech/goose-bharatgen/releases/download/stable/download_cli.sh | bash
 ```
 
-then point it at the gateway with your virtual key (`~/.config/mancha/env`):
+then point it at the gateway with your virtual key (`~/.config/bg-code/env`):
 
 ```bash
 export GOOSE_PROVIDER=litellm GOOSE_MODEL=bharatgen-param

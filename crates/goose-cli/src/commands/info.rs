@@ -125,7 +125,7 @@ pub async fn handle_info(verbose: bool, check: bool) -> Result<()> {
         .unwrap_or(0)
         + 4;
 
-    println!("{}", style("Mancha Version:").cyan().bold());
+    println!("{}", style("bg-code Version:").cyan().bold());
     print_aligned("Version:", env!("CARGO_PKG_VERSION"), label_padding);
     println!();
 
@@ -140,7 +140,7 @@ pub async fn handle_info(verbose: bool, check: bool) -> Result<()> {
     }
 
     if verbose {
-        println!("\n{}", style("Mancha Configuration:").cyan().bold());
+        println!("\n{}", style("bg-code Configuration:").cyan().bold());
         let values = config.all_values()?;
         if values.is_empty() {
             println!("  No configuration values set");

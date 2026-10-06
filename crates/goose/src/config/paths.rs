@@ -22,9 +22,9 @@ impl Paths {
             let strategy = choose_app_strategy(AppStrategyArgs {
                 top_level_domain: "BharatGen".to_string(),
                 author: "BharatGen".to_string(),
-                app_name: "mancha".to_string(),
+                app_name: "bg-code".to_string(),
             })
-            .expect("mancha requires a home dir");
+            .expect("bg-code requires a home dir");
 
             match dir_type {
                 DirType::Config => strategy.config_dir(),

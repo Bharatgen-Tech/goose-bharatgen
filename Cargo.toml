@@ -13,7 +13,7 @@ rust-version = "1.94.1"
 authors = ["AAIF <ai-oss-tools@block.xyz>"]
 license = "Apache-2.0"
 repository = "https://github.com/aaif-goose/goose"
-description = "Mancha - BharatGen AI agent"
+description = "bg-code - BharatGen AI agent"
 
 [workspace.lints.clippy]
 uninlined_format_args = "allow"
