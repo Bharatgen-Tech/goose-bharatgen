@@ -235,7 +235,7 @@ async fn handle_first_time_setup(config: &Config) -> anyhow::Result<()> {
     configure_telemetry_consent_dialog()?;
 
     println!();
-    cliclack::intro(style(" goose-configure ").on_cyan().black())?;
+    cliclack::intro(style(" bg-code-configure ").on_cyan().black())?;
 
     let setup_method = cliclack::select("How would you like to set up your provider?")
         .item(
@@ -288,7 +288,7 @@ async fn handle_manual_provider_setup(config: &Config) {
             println!(
                 "\n  {}: Run '{}' again to adjust your config or add extensions",
                 style("Tip").green().italic(),
-                style("goose configure").cyan()
+                style("bg-code configure").cyan()
             );
             set_extension(ExtensionEntry {
                 enabled: true,
@@ -300,7 +300,7 @@ async fn handle_manual_provider_setup(config: &Config) {
             println!(
                 "\n  {}: We did not save your config, inspect your credentials\n   and run '{}' again to ensure goose can connect",
                 style("Warning").yellow().italic(),
-                style("goose configure").cyan()
+                style("bg-code configure").cyan()
             );
         }
         Err(e) => {
@@ -317,7 +317,7 @@ fn print_manual_config_error(e: &anyhow::Error) {
                 "\n  {} Required configuration key '{}' not found \n  Please provide this value and run '{}' again",
                 style("Error").red().italic(),
                 key,
-                style("goose configure").cyan()
+                style("bg-code configure").cyan()
             );
         }
         Some(ConfigError::KeyringError(msg)) => {
@@ -328,7 +328,7 @@ fn print_manual_config_error(e: &anyhow::Error) {
                 "\n  {} Invalid configuration value: {} \n  Please check your input and run '{}' again",
                 style("Error").red().italic(),
                 msg,
-                style("goose configure").cyan()
+                style("bg-code configure").cyan()
             );
         }
         Some(ConfigError::FileError(err)) => {
@@ -336,7 +336,7 @@ fn print_manual_config_error(e: &anyhow::Error) {
                 "\n  {} Failed to access config file: {} \n  Please check file permissions and run '{}' again",
                 style("Error").red().italic(),
                 err,
-                style("goose configure").cyan()
+                style("bg-code configure").cyan()
             );
         }
         Some(ConfigError::DirectoryError(msg)) => {
@@ -344,7 +344,7 @@ fn print_manual_config_error(e: &anyhow::Error) {
                 "\n  {} Failed to access config directory: {} \n  Please check directory permissions and run '{}' again",
                 style("Error").red().italic(),
                 msg,
-                style("goose configure").cyan()
+                style("bg-code configure").cyan()
             );
         }
         _ => {
@@ -352,7 +352,7 @@ fn print_manual_config_error(e: &anyhow::Error) {
                 "\n  {} {} \n  We did not save your config, inspect your credentials\n   and run '{}' again to ensure goose can connect",
                 style("Error").red().italic(),
                 e,
-                style("goose configure").cyan()
+                style("bg-code configure").cyan()
             );
         }
     }
@@ -364,7 +364,7 @@ fn print_keyring_error(msg: &str) {
         "\n  {} Failed to access secure storage (keyring): {} \n  Please check your system keychain and run '{}' again. \n  If your system is unable to use the keyring, please try setting secret key(s) via environment variables.",
         style("Error").red().italic(),
         msg,
-        style("goose configure").cyan()
+        style("bg-code configure").cyan()
     );
 }
 
@@ -374,7 +374,7 @@ fn print_keyring_error(msg: &str) {
         "\n  {} Failed to access Windows Credential Manager: {} \n  Please check Windows Credential Manager and run '{}' again. \n  If your system is unable to use the Credential Manager, please try setting secret key(s) via environment variables.",
         style("Error").red().italic(),
         msg,
-        style("goose configure").cyan()
+        style("bg-code configure").cyan()
     );
 }
 
@@ -384,7 +384,7 @@ fn print_keyring_error(msg: &str) {
         "\n  {} Failed to access secure storage: {} \n  Please check your system's secure storage and run '{}' again. \n  If your system is unable to use secure storage, please try setting secret key(s) via environment variables.",
         style("Error").red().italic(),
         msg,
-        style("goose configure").cyan()
+        style("bg-code configure").cyan()
     );
 }
 
@@ -403,7 +403,7 @@ async fn handle_existing_config() -> anyhow::Result<()> {
     );
     println!();
 
-    cliclack::intro(style(" goose-configure ").on_cyan().black())?;
+    cliclack::intro(style(" bg-code-configure ").on_cyan().black())?;
     let action = cliclack::select("What would you like to configure?")
         .item(
             "providers",
@@ -424,7 +424,7 @@ async fn handle_existing_config() -> anyhow::Result<()> {
         .item("remove", "Remove Extension", "Remove an extension")
         .item(
             "settings",
-            "goose settings",
+            "bg-code settings",
             "Set the goose mode, Tool Output, Tool Permissions, Experiment, goose recipe github repo and more",
         )
         .interact()?;
