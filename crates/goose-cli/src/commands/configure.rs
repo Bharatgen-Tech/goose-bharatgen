@@ -244,6 +244,11 @@ async fn handle_first_time_setup(config: &Config) -> anyhow::Result<()> {
             "Sign in with OpenRouter to automatically configure models",
         )
         .item(
+            "openrouter-key",
+            "OpenRouter API Key",
+            "Paste an existing OpenRouter API key from openrouter.ai/keys",
+        )
+        .item(
             "tetrate",
             "Tetrate Agent Router Service Login",
             "Sign in with Tetrate Agent Router Service to automatically configure models",
@@ -261,6 +266,28 @@ async fn handle_first_time_setup(config: &Config) -> anyhow::Result<()> {
                 let _ = config.clear();
                 println!(
                     "\n  {} OpenRouter authentication failed: {} \n  Please try again or use manual configuration",
+                    style("Error").red().italic(),
+                    e,
+                );
+            }
+        }
+        "openrouter-key" => {
+            let key = match cliclack::password("Paste your OpenRouter API key").interact() {
+                Ok(key) => key,
+                Err(e) => {
+                    let _ = config.clear();
+                    println!(
+                        "\n  {} Could not read the API key: {}",
+                        style("Error").red().italic(),
+                        e
+                    );
+                    return Ok(());
+                }
+            };
+            if let Err(e) = handle_openrouter_auth_with_key(key).await {
+                let _ = config.clear();
+                println!(
+                    "\n  {} OpenRouter configuration failed: {} \n  Please try again or use manual configuration",
                     style("Error").red().italic(),
                     e,
                 );
@@ -1951,20 +1978,22 @@ pub fn configure_max_turns_dialog() -> anyhow::Result<()> {
 
 /// Handle OpenRouter authentication
 pub async fn handle_openrouter_auth() -> anyhow::Result<()> {
-    use goose::config::{configure_openrouter, signup_openrouter::OpenRouterAuth};
-    use goose::conversation::message::Message;
-    use goose::providers::create;
+    use goose::config::signup_openrouter::OpenRouterAuth;
 
     // Use the OpenRouter authentication flow
     let mut auth_flow = OpenRouterAuth::new()?;
     let api_key = auth_flow.complete_flow().await?;
     println!("\nAuthentication complete!");
+    handle_openrouter_auth_with_key(api_key).await
+}
 
-    // Get config instance
+pub async fn handle_openrouter_auth_with_key(api_key: String) -> anyhow::Result<()> {
+    use goose::config::configure_openrouter;
+    use goose::conversation::message::Message;
+    use goose::providers::create;
+
     let config = Config::global();
 
-    // Use the existing configure_openrouter function to set everything up
-    println!("\nConfiguring OpenRouter...");
     configure_openrouter(config, api_key)?;
 
     println!("✓ OpenRouter configuration complete");

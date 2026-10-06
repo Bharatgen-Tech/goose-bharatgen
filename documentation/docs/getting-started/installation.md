@@ -262,6 +262,7 @@ goose works with [supported LLM providers][providers] that give goose the AI int
     The CLI automatically enters configuration mode where you can choose how to configure a provider:
 
     - **OpenRouter Login** - Sign in with OpenRouter to automatically configure models
+    - **OpenRouter API Key** - Paste an existing OpenRouter API key from openrouter.ai/keys
     - **Tetrate Agent Router Service Login** - Sign in with Tetrate Agent Router Service to automatically configure models
     - **Manual Configuration** - Choose a provider and enter credentials manually
 
