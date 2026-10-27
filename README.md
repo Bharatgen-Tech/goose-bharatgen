@@ -34,13 +34,36 @@ goose is part of the [Agentic AI Foundation (AAIF)](https://aaif.io/) at the Lin
 
 This is the BharatGen white-labelled distribution of goose (Apache-2.0; modified — see the commit history, not affiliated with or endorsed by the goose maintainers). It ships with the Manch LiteLLM gateway preconfigured (`litellm` provider, `bharatgen-param` model) and stores its config in `~/.config/bg-code`.
 
-### Install (macOS / Linux)
+### Install (npm)
+
+```bash
+npm install -g @bharatgen-tech/cli --registry=https://npm.pkg.github.com
+```
+
+The package is published to the GitHub npm registry; a GitHub token with `read:packages` scope is required:
+
+```
+//npm.pkg.github.com/:_authToken=<YOUR_GITHUB_TOKEN>
+@bharatgen-tech:registry=https://npm.pkg.github.com
+```
+
+Add the lines above to `~/.npmrc`.
+
+### Install (macOS / Linux / Windows)
 
 ```bash
 clients/install.sh --url https://llm.<your-domain> --key <your-virtual-key> [--model <name>]
 ```
 
-from the `clients/` directory of [mancha-code](https://github.com/Bharatgen-Tech/mancha-code). It installs the CLI and OpenCode, backs up any existing config, and writes your settings to `~/.config/bg-code/env`. Virtual keys are issued by admins (`scripts/provision.py key`).
+from the `clients/` directory of [mancha-code](https://github.com/Bharatgen-Tech/mancha-code). It installs the CLI, backs up any existing config, and writes your settings to `~/.config/bg-code/env`. Virtual keys are issued by admins (`scripts/provision.py key`).
+
+Anything not passed as a flag is prompted for, so `clients/install.sh` on its own works too. It also supports:
+
+- `--desktop` — download the desktop app instead of installing the CLI
+- Windows (under Git Bash/MSYS2/Cygwin) — installs `bg-code.exe` to `~/.local/bin`
+- No `--url` — configures the `openrouter` provider with your own OpenRouter API key instead of the Manch gateway
+
+The script uses only public GitHub release URLs — no GitHub token required. (The npm route below does need one.)
 
 ### Use
 

@@ -16,29 +16,29 @@ const originalSystemVersion = Object.getOwnPropertyDescriptor(process, 'getSyste
 const metadataUrl = 'https://example.invalid/mac-update-requirements.json';
 const assets = [
   { name: 'mac-update-requirements.json', browser_download_url: metadataUrl, size: 100 },
-  { name: 'Goose.zip', browser_download_url: 'https://example.invalid/Goose.zip', size: 100 },
+  { name: 'bg-code.zip', browser_download_url: 'https://example.invalid/bg-code.zip', size: 100 },
   {
-    name: 'Goose_intel_mac.zip',
-    browser_download_url: 'https://example.invalid/Goose_intel_mac.zip',
+    name: 'bg-code_intel_mac.zip',
+    browser_download_url: 'https://example.invalid/bg-code_intel_mac.zip',
     size: 100,
   },
   {
-    name: 'Goose-win32-x64.zip',
-    browser_download_url: 'https://example.invalid/Goose-win32-x64.zip',
+    name: 'bg-code-win32-x64.zip',
+    browser_download_url: 'https://example.invalid/bg-code-win32-x64.zip',
     size: 100,
   },
   {
-    name: 'Goose-linux-x64.zip',
-    browser_download_url: 'https://example.invalid/Goose-linux-x64.zip',
+    name: 'bg-code-linux-x64.zip',
+    browser_download_url: 'https://example.invalid/bg-code-linux-x64.zip',
     size: 100,
   },
 ];
-const release = { tag_name: 'v1.51.0', name: 'Goose', assets };
+const release = { tag_name: 'v1.51.0', name: 'bg-code', assets };
 
 function generatedRequirements(minimumMacOSVersion: string) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'goose-fallback-release-test-'));
   try {
-    for (const name of ['Goose.zip', 'Goose_intel_mac.zip']) {
+    for (const name of ['bg-code.zip', 'bg-code_intel_mac.zip']) {
       fs.writeFileSync(path.join(directory, name), 'archive fixture');
       fs.writeFileSync(
         path.join(directory, `${name}.macos.json`),
@@ -51,7 +51,7 @@ function generatedRequirements(minimumMacOSVersion: string) {
       'v1.51.0',
       '--directory',
       directory,
-    ]);
+    ], { env: { ...process.env, GOOSE_BUNDLE_NAME: 'bg-code' } });
     return JSON.parse(
       fs.readFileSync(path.join(directory, 'mac-update-requirements.json'), 'utf8')
     ) as unknown;
@@ -67,7 +67,7 @@ function mockRelease(metadata: unknown = macOS13Release, releaseAssets = assets)
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
-      if (url === 'https://api.github.com/repos/aaif-goose/goose/releases/latest') {
+      if (url === 'https://api.github.com/repos/Bharatgen-Tech/goose-bharatgen/releases/latest') {
         return new Response(JSON.stringify({ ...release, assets: releaseAssets }));
       }
       if (url === metadataUrl) {
@@ -108,9 +108,9 @@ describe('GitHub updater macOS compatibility', () => {
   });
 
   it.each([
-    ['arm64', '13.0', 'Goose.zip'],
-    ['x64', '13.0', 'Goose_intel_mac.zip'],
-    ['arm64', '26.0', 'Goose.zip'],
+    ['arm64', '13.0', 'bg-code.zip'],
+    ['x64', '13.0', 'bg-code_intel_mac.zip'],
+    ['arm64', '26.0', 'bg-code.zip'],
   ])('offers the %s download on macOS %s', async (arch, version, asset) => {
     Object.defineProperty(process, 'arch', { value: arch });
     vi.mocked(process.getSystemVersion).mockReturnValue(version);
@@ -166,7 +166,7 @@ describe('GitHub updater macOS compatibility', () => {
     );
     expect(await new GitHubUpdater().checkForUpdates()).toMatchObject({
       updateAvailable: true,
-      downloadUrl: `https://example.invalid/Goose-${platform}-x64.zip`,
+      downloadUrl: `https://example.invalid/bg-code-${platform}-x64.zip`,
     });
   });
 });
