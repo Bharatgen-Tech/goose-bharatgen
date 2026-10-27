@@ -69,8 +69,8 @@ The script uses only public GitHub release URLs — no GitHub token required. (T
 
 ```bash
 source ~/.config/bg-code/env     # or add it to your shell profile
-goose session                   # interactive session
-goose run --text "explain this repo"
+bg-code session                  # interactive session
+bg-code run --text "explain this repo"
 ```
 
 No provider setup needed: on first use, the `litellm` provider and `or-qwen-free` model are preconfigured (same models as OpenCode — `or-qwen-free`, `or-qwen-coder`, `or-glm`, `or-kimi`, `bharatgen-param`; switch with `GOOSE_MODEL=<name>`), your key and gateway URL come from the installer. Telemetry is off (`GOOSE_TELEMETRY_OFF=1`).
@@ -100,7 +100,9 @@ cargo build --release -p goose-cli --bin goose
 # binary: target/release/goose
 ```
 
-Build deps on Linux: `build-essential pkg-config libssl-dev libdbus-1-dev libxcb1-dev clang` (libclang is required by bindgen). Desktop app: see `ui/desktop/README.md`.
+Build deps on Linux: `build-essential pkg-config libssl-dev libdbus-1-dev libxcb1-dev clang` (libclang is required by bindgen; set `LIBCLANG_PATH=/usr/lib/x86_64-linux-gnu` if the build can't find it). Desktop app: see `ui/desktop/README.md`.
+
+The desktop app is branded `bg-code` and checks for updates against `Bharatgen-Tech/goose-bharatgen` by default; override with `GITHUB_OWNER`, `GITHUB_REPO`, or `GOOSE_BUNDLE_NAME`.
 
 # Get started
 
