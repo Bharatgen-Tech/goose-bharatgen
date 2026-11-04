@@ -1,6 +1,6 @@
 # Contribution Guide
 
-goose is open source, and code is only one way to contribute. Reporting a problem, reproducing it, sharing domain knowledge, shaping the design, implementing the solution, and verifying the result are all valuable work.
+goose is open source, and code is not the only way to contribute. Reporting a problem, reproducing it, sharing domain knowledge, shaping the design, implementing the solution, and verifying the result are all valuable work.
 
 We organize this work on the public [Goose Issues board](https://github.com/orgs/aaif-goose/projects/1). The issue is the main record of a contribution, from the first report through design, implementation, and verification.
 
@@ -59,12 +59,6 @@ Every external pull request must:
 Pull requests that do not implement a Ready issue will be closed. Automated dependency and release pull requests, urgent security fixes, and work explicitly directed by the core team are exempt.
 
 Don't open many pull requests in quick succession. Submit them in order of preference and wait for them to land before opening more.
-
-## Agent Loop Migration
-
-We are replacing the legacy agent loop in `crates/goose/src/agents/agent.rs` with the state machine in `crates/goose/src/agents/state_machine/`. The state-machine path is enabled with `GOOSE_STATE_MACHINE=1`.
-
-Until the migration is complete, changes to agent-loop behavior must be implemented and tested in both paths. Pull requests should explain how parity between the two paths was verified.
 
 ## AI Code Reviews
 

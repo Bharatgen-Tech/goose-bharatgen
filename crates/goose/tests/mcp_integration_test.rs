@@ -16,8 +16,9 @@ use tokio_util::sync::CancellationToken;
 use goose::action_required_manager::ElicitationOutcome;
 use goose::agents::extension::{Envs, ExtensionConfig};
 use goose::agents::extension_manager::{
-    CallRequest, ExtensionLease, ExtensionManager, ExtensionManagerCapabilities, ExtensionSet,
+    CallRequest, ClientContext, ExtensionLease, ExtensionManager, ExtensionSet,
 };
+use goose::agents::mcp_client::GooseMcpClientCapabilities;
 use goose::agents::GoosePlatform;
 use goose::config::GooseMode;
 use goose::conversation::message::ActionRequiredData;
@@ -95,17 +96,18 @@ async fn fixture(mcpui: bool, protocol_version: Option<ProtocolVersion>) -> Fixt
         temp_dir.path().to_path_buf(),
     ));
     let manager = Arc::new(ExtensionManager::new(
-        Arc::new(tokio::sync::Mutex::new(None)),
+        Default::default(),
         session_manager.clone(),
         None,
-        "extension-contract".to_string(),
-        ExtensionManagerCapabilities {
-            mcpui,
-            host_info: None,
-            elicitation_handler: None,
-            protocol_version,
+        ClientContext {
+            name: "extension-contract".to_string(),
+            capabilities: GooseMcpClientCapabilities {
+                mcpui,
+                host_info: None,
+                elicitation_handler: None,
+                protocol_version,
+            },
         },
-        false,
     ));
     Fixture {
         manager,
@@ -129,12 +131,7 @@ impl Fixture {
 
     async fn add(&self, session: &goose::session::Session, config: &ExtensionConfig) {
         self.manager
-            .add_extension(
-                config.clone(),
-                Some(session.working_dir.clone()),
-                None,
-                Some(&session.id),
-            )
+            .enable(&session.id, config.clone())
             .await
             .unwrap();
     }
@@ -270,6 +267,8 @@ async fn inspect_context(lease: &ExtensionLease, name: &str) -> ContextReport {
     serde_json::from_str(&call_text(lease, name).await).unwrap()
 }
 
+const DOTTED_DB_QUERY: &str = "fixture_http__db_query_9cffee1f";
+
 /// One manager, three transports, one lease: the catalog, mangled-name
 /// recovery, filtering, app scoping, the restart-on-config-change rule, and
 /// what a held lease does and does not see when the registry changes.
@@ -302,11 +301,22 @@ async fn extension_lifecycle_across_real_transports(stdio_version: ProtocolVersi
     let configs = vec![http.clone(), stdio.clone(), todo.clone(), skills.clone()];
     let lease = fx.resolve(&session, &configs).await;
 
-    // The catalog: prefixed per extension, filtered by available_tools.
+    // The catalog: prefixed per extension, filtered by available_tools, and
+    // spelled the way providers accept.
     let names = tool_names(&lease.tools().await);
+    for name in &names {
+        assert!(
+            name.len() <= 64
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "{name}"
+        );
+    }
     for expected in [
         "fixture_http__get_code",
-        "fixture_http__db.query",
+        "fixture_http__db_query",
+        DOTTED_DB_QUERY,
         "fixture_stdio__get_code",
         "fixture_stdio__inspect_context",
         "todo__todo_write",
@@ -388,15 +398,22 @@ async fn extension_lifecycle_across_real_transports(stdio_version: ProtocolVersi
     )
     .starts_with("Updated ("));
 
-    // Spellings a model mangles resolve to the same tools; an exact dotted
-    // name is never rewritten.
+    // Spellings a model mangles resolve to the same tools, and a sanitized
+    // name reaches the server under its original name.
     assert_eq!(call_text(&lease, "fixture_stdio.get_code").await, FAKE_CODE);
     assert_eq!(
         call_text(&lease, "functions.fixture_stdio__get_code").await,
         FAKE_CODE
     );
-    assert_eq!(call_text(&lease, "fixture_http__db.query").await, "rows");
-    assert_eq!(call_text(&lease, "fixture_http.db.query").await, "rows");
+    assert_eq!(call_text(&lease, DOTTED_DB_QUERY).await, "rows");
+    assert_eq!(
+        call_text(&lease, "fixture_http__db_query").await,
+        "underscore rows"
+    );
+    assert_eq!(
+        call_text(&lease, "fixture_http.db_query").await,
+        "underscore rows"
+    );
     let unknown = call(&lease, "no_such_tool", None).await.unwrap_err();
     assert_eq!(unknown.code, ErrorCode::RESOURCE_NOT_FOUND);
     assert!(
@@ -468,13 +485,14 @@ async fn extension_lifecycle_across_real_transports(stdio_version: ProtocolVersi
             .instance_id,
         first_instance
     );
-    // The old config no longer matches what is running, so a set that still
-    // names it gets nothing for that extension.
-    assert!(
-        tool_names(&fx.resolve(&session, &configs).await.tools().await)
-            .iter()
-            .all(|name| !name.starts_with("fixture_stdio__"))
-    );
+    // A set that still names the old config gets a process of its own.
+    let old_config_instance = inspect_context(
+        &fx.resolve(&session, &configs).await,
+        "fixture_stdio__inspect_context",
+    )
+    .await
+    .instance_id;
+    assert_ne!(old_config_instance, first_instance);
 
     // tools/list_changed arrives on the GET stream: the next resolve sees the
     // new tool while the held lease stays as it was.
@@ -503,22 +521,17 @@ async fn extension_lifecycle_across_real_transports(stdio_version: ProtocolVersi
         "late"
     );
 
-    // Removal is invisible to a held lease and visible to a fresh one.
-    fx.manager.remove_extension("todo").await.unwrap();
+    // Removal is invisible to a held lease and visible to the session's next
+    // one.
+    assert!(fx.manager.disable(&session.id, "todo").await.unwrap());
     assert!(tool_names(&lease.tools().await).contains(&"todo__todo_write".to_string()));
     assert!(!tool_names(
-        &fx.resolve(
-            &session,
-            &[
-                http.clone(),
-                wider_stdio.clone(),
-                todo.clone(),
-                skills.clone(),
-            ],
-        )
-        .await
-        .tools()
-        .await
+        &fx.manager
+            .current_lease(&session.id)
+            .await
+            .unwrap()
+            .tools()
+            .await
     )
     .contains(&"todo__todo_write".to_string()));
 
@@ -533,10 +546,6 @@ async fn extension_lifecycle_across_real_transports(stdio_version: ProtocolVersi
         .update(&session.id)
         .working_dir(new_working_dir.clone())
         .apply()
-        .await
-        .unwrap();
-    fx.manager
-        .update_working_dir(&new_working_dir, None, &session.id)
         .await
         .unwrap();
     let moved_session = fx
@@ -557,6 +566,14 @@ async fn extension_lifecycle_across_real_transports(stdio_version: ProtocolVersi
     assert!(load_leased_skill(&after_move)
         .await
         .contains("new workspace"));
+
+    // `session` still names the old directory; the add follows the stored one.
+    fx.add(&session, &stdio).await;
+    let re_added = fx
+        .resolve(&moved_session, std::slice::from_ref(&stdio))
+        .await;
+    let re_added_stdio = inspect_context(&re_added, "fixture_stdio__inspect_context").await;
+    assert_eq!(re_added_stdio.roots, after_stdio.roots);
     let retained_http = inspect_context(&before_move, "fixture_http__inspect_context").await;
     let retained_stdio = inspect_context(&before_move, "fixture_stdio__inspect_context").await;
     let old_root = url::Url::from_file_path(&session.working_dir)
@@ -894,24 +911,23 @@ async fn test_replayed_session(
         temp_dir.path().to_path_buf(),
     ));
     let extension_manager = Arc::new(ExtensionManager::new(
-        Arc::new(tokio::sync::Mutex::new(None)),
+        Default::default(),
         session_manager,
         None,
-        GoosePlatform::GooseDesktop.to_string(),
-        ExtensionManagerCapabilities {
-            mcpui: true,
-            host_info: None,
-            elicitation_handler: None,
-            protocol_version: None,
+        ClientContext {
+            name: GoosePlatform::GooseDesktop.to_string(),
+            capabilities: GooseMcpClientCapabilities {
+                mcpui: true,
+                host_info: None,
+                elicitation_handler: None,
+                protocol_version: None,
+            },
         },
-        true,
     ));
 
     #[allow(clippy::redundant_closure_call)]
     let result = (async || -> Result<(), Box<dyn std::error::Error>> {
-        extension_manager
-            .add_extension(extension_config, None, None, None)
-            .await?;
+        let set = ExtensionSet::new("test-session-id", None, vec![extension_config])?;
         let mut results = Vec::new();
         for tool_call in tool_calls {
             let mut new_call = CallToolRequestParams::new(format!("test__{}", tool_call.name));
@@ -928,7 +944,13 @@ async fn test_replayed_session(
                 Some("test-id".to_string()),
             );
             let result = extension_manager
-                .dispatch_tool_call(&ctx, tool_call, CancellationToken::default())
+                .resolve(&set)
+                .await
+                .call(
+                    tool_call,
+                    CallRequest::from(&ctx),
+                    CancellationToken::default(),
+                )
                 .await;
 
             let tool_result = result?;
